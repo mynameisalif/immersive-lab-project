@@ -1,0 +1,63 @@
+# ─── Dependencies ────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ─── Environment Variables (RAHASIA - JANGAN PERNAH COMMIT) ──
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test.local
+.env.production
+.env.production.local
+backend/.env
+frontend/.env
+
+# ─── Build Output ────────────────────────────────────────────
+dist/
+build/
+frontend/dist/
+backend/dist/
+
+# ─── Logs ────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── File Upload (User Data) ─────────────────────────────────
+backend/uploads/
+backend/src/uploads/
+uploads/
+
+# ─── OS Files ────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# ─── Editor / IDE ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# ─── TypeScript ──────────────────────────────────────────────
+*.tsbuildinfo
+
+# ─── Vite / Frontend ─────────────────────────────────────────
+frontend/.vite/
+
+# ─── Misc ────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+coverage/
+*.local
