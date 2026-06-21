@@ -14,6 +14,7 @@ import {
   DialogTitle,
   DialogTrigger,
   DialogFooter,
+  DialogDescription,
 } from "../components/ui/dialog";
 import { Textarea } from "../components/ui/textarea";
 import {
@@ -27,7 +28,6 @@ export const Route = createFileRoute("/_app/approval")({
   head: () => ({ meta: [{ title: "Approval · MNP Lab Loan" }] }),
 });
 
-// Base URL backend dari env
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 interface Item {
@@ -37,6 +37,7 @@ interface Item {
   borrow_date: string;
   return_deadline: string;
   requester_id: string;
+  requester_role?: string;
   asset_name?: string;
   merk?: string;
   type?: string;
@@ -61,6 +62,13 @@ const mapStatus = (s: string): LoanStatus => {
   return (map[s] ?? s) as LoanStatus;
 };
 
+const formatDate = (d: string) => {
+  if (!d) return "—";
+  const dt = new Date(d);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()}`;
+};
+
 const formatCategory = (cat?: string) => {
   if (!cat) return "—";
   if (cat === "kelas_praktikum") return "Kelas / Praktikum";
@@ -69,21 +77,41 @@ const formatCategory = (cat?: string) => {
 };
 
 function ApprovalPage() {
-  const { role } = useAuth();
+  // ✅ useAuth dipanggil di dalam component
+  const { role, isKaprodi } = useAuth();
   const [rows, setRows] = useState<Item[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Guard: hanya admin dan kaprodi yang bisa akses
+  const canAccess = role === "admin" || (role === "dosen" && isKaprodi);
+
+  const getPageTitle = () => {
+    if (role === "admin") return "Approval Final";
+    if (isKaprodi) return "Approval Mahasiswa";
+    return "Approval";
+  };
+
+  const getPageDesc = () => {
+    if (role === "admin")
+      return "Approve request dari staff dan dosen, serta mahasiswa yang sudah disetujui Kaprodi.";
+    if (isKaprodi)
+      return "Approve atau tolak request peminjaman dari mahasiswa.";
+    return "";
+  };
+
   const load = async () => {
+    if (!canAccess) return;
     try {
       const res = await getPendingApprovals();
       const data = res.data?.data ?? [];
       const list: Item[] = data.map((r: any) => ({
         id: r.id,
-        notes: r.notes ?? r.purpose ?? "",
+        notes: r.notes ?? "",
         status: mapStatus(r.status),
         borrow_date: r.borrow_date,
         return_deadline: r.return_deadline,
         requester_id: r.requester_id,
+        requester_role: r.requester_role ?? "",
         asset_name: r.asset_name ?? "—",
         merk: r.merk ?? "",
         type: r.type ?? "",
@@ -102,7 +130,7 @@ function ApprovalPage() {
 
   useEffect(() => {
     void load();
-  }, [role]);
+  }, [role, isKaprodi]);
 
   const decide = async (
     loanId: string,
@@ -112,8 +140,12 @@ function ApprovalPage() {
     setLoading(true);
     try {
       if (decision === "approved") {
-        await approveLoan(loanId, reason ?? "Disetujui");
-        toast.success("Peminjaman berhasil disetujui");
+        await approveLoan(loanId, reason ?? "");
+        toast.success(
+          isKaprodi
+            ? "Disetujui! Menunggu konfirmasi Admin."
+            : "Peminjaman berhasil disetujui",
+        );
       } else {
         if (!reason) return toast.error("Alasan penolakan wajib diisi");
         await rejectLoan(loanId, reason);
@@ -132,16 +164,18 @@ function ApprovalPage() {
     return parts || r.asset_name || "—";
   };
 
+  // Guard: jika bukan admin/kaprodi
+  if (!canAccess) {
+    return (
+      <div className="rounded-xl border bg-card p-8 text-center text-muted-foreground">
+        Halaman ini tidak tersedia untuk role Anda.
+      </div>
+    );
+  }
+
   return (
     <>
-      <PageHeader
-        title="Approval Peminjaman"
-        description={
-          role === "admin"
-            ? "Persetujuan final dari admin lab."
-            : "Persetujuan dari dosen pembimbing."
-        }
-      />
+      <PageHeader title={getPageTitle()} description={getPageDesc()} />
 
       {rows.length === 0 ? (
         <div className="mt-8">
@@ -166,6 +200,18 @@ function ApprovalPage() {
                       {r.id.slice(0, 8)}
                     </span>
                     <StatusBadge status={r.status} />
+                    {/* Badge role peminjam */}
+                    {r.requester_role && (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground capitalize">
+                        {r.requester_role === "student"
+                          ? "Mahasiswa"
+                          : r.requester_role === "dosen"
+                            ? "Dosen"
+                            : r.requester_role === "staff"
+                              ? "Staff"
+                              : r.requester_role}
+                      </span>
+                    )}
                   </div>
 
                   {/* Aset */}
@@ -187,7 +233,7 @@ function ApprovalPage() {
                     )}
                   </p>
 
-                  {/* Kategori Peminjaman */}
+                  {/* Kategori */}
                   <div className="mt-1.5 flex items-center gap-2">
                     <span className="text-xs text-muted-foreground">
                       Kategori:
@@ -203,7 +249,7 @@ function ApprovalPage() {
                     </span>
                   </div>
 
-                  {/* Proposal — hanya tampil jika event_kegiatan & ada file */}
+                  {/* Proposal */}
                   {r.category === "event_kegiatan" && r.attachment_url && (
                     <a
                       href={`${API_URL}${r.attachment_url}`}
@@ -219,7 +265,8 @@ function ApprovalPage() {
 
                   {/* Tanggal */}
                   <p className="mt-1.5 text-xs text-muted-foreground">
-                    Pinjam {r.borrow_date} → Kembali {r.return_deadline}
+                    Pinjam {formatDate(r.borrow_date)} → Kembali{" "}
+                    {formatDate(r.return_deadline)}
                   </p>
                 </div>
 
@@ -274,18 +321,16 @@ function RejectDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Tolak Pengajuan</DialogTitle>
+          <DialogDescription>
+            Sertakan alasan penolakan untuk transparansi kepada peminjam.
+          </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            Sertakan alasan penolakan untuk transparansi.
-          </p>
-          <Textarea
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            rows={4}
-            placeholder="Alasan penolakan…"
-          />
-        </div>
+        <Textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={4}
+          placeholder="Alasan penolakan…"
+        />
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>
             Batal

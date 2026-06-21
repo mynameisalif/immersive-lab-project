@@ -14,7 +14,6 @@ import { useAuth } from "../../lib/auth";
 import { toast } from "sonner";
 import { Loader2, Paperclip } from "lucide-react";
 import { getAvailableAssets } from "../../services/asset.service";
-import { getDosen } from "../../services/user.service";
 import { createLoan } from "../../services/loan.service";
 
 interface AssetOpt {
@@ -23,11 +22,6 @@ interface AssetOpt {
   merk: string | null;
   type: string | null;
   available_units: number;
-}
-
-interface DosenOpt {
-  id: string;
-  full_name: string;
 }
 
 export function LoanRequestForm({
@@ -40,7 +34,6 @@ export function LoanRequestForm({
   const { user, role } = useAuth();
 
   const [assets, setAssets] = useState<AssetOpt[]>([]);
-  const [dosens, setDosens] = useState<DosenOpt[]>([]);
   const [assetId, setAssetId] = useState("");
   const [qty, setQty] = useState(1);
   const [maxQty, setMaxQty] = useState(99);
@@ -50,7 +43,6 @@ export function LoanRequestForm({
   >("kelas_praktikum");
   const [borrow, setBorrow] = useState("");
   const [deadline, setDeadline] = useState("");
-  const [dosenId, setDosenId] = useState("");
   const [proposal, setProposal] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
@@ -59,8 +51,6 @@ export function LoanRequestForm({
     void (async () => {
       try {
         setFetching(true);
-
-        // GET aset kondisi good & loan_status tersedia
         const resAssets = await getAvailableAssets();
         const assetData: AssetOpt[] = (resAssets.data?.data ?? []).map(
           (a: any) => ({
@@ -72,27 +62,14 @@ export function LoanRequestForm({
           }),
         );
         setAssets(assetData);
-
-        // GET dosen (hanya untuk mahasiswa)
-        if (role === "student") {
-          const resDosen = await getDosen();
-          setDosens(
-            resDosen.map((d: any) => ({
-              id: d.id,
-              full_name: d.full_name,
-            })),
-          );
-        }
       } catch {
         setAssets([]);
-        setDosens([]);
       } finally {
         setFetching(false);
       }
     })();
   }, [role]);
 
-  // Update max qty saat pilih aset
   const handleAssetChange = (id: string) => {
     setAssetId(id);
     const found = assets.find((a) => a.asset_id === id);
@@ -101,23 +78,30 @@ export function LoanRequestForm({
     if (qty > max) setQty(max);
   };
 
-  // Label aset di dropdown
   const getAssetLabel = (a: AssetOpt) => {
     const parts = [a.merk, a.type].filter(Boolean).join(" ");
     return parts || a.name;
   };
 
+  // Info alur approval berdasarkan role
+  const getApprovalInfo = () => {
+    if (role === "student")
+      return "Pengajuan akan diteruskan ke Kepala Prodi → Admin";
+    if (role === "dosen" || role === "staff")
+      return "Pengajuan akan langsung diteruskan ke Admin";
+    return "";
+  };
+
   const submit = async () => {
     if (!user) return;
 
-    // Validasi
     if (!assetId) return toast.error("Pilih aset yang akan dipinjam");
     if (!borrow) return toast.error("Tanggal pinjam wajib diisi");
     if (!deadline) return toast.error("Tanggal kembali wajib diisi");
     if (deadline < borrow)
       return toast.error("Tanggal kembali tidak boleh sebelum tanggal pinjam");
-    if (role === "student" && !dosenId)
-      return toast.error("Pilih dosen pembimbing");
+
+    // Proposal hanya wajib untuk student + event_kegiatan
     if (role === "student" && category === "event_kegiatan" && !proposal)
       return toast.error("Upload proposal kegiatan wajib untuk kategori Event");
 
@@ -130,8 +114,8 @@ export function LoanRequestForm({
           category,
           borrow_date: borrow,
           return_deadline: deadline,
-          dosen_id: role === "student" ? dosenId : null,
           notes: notes || null,
+          // ✅ dosen_id dihapus — routing otomatis dari backend
         },
         proposal ?? undefined,
       );
@@ -145,7 +129,6 @@ export function LoanRequestForm({
       setNotes("");
       setBorrow("");
       setDeadline("");
-      setDosenId("");
       setProposal(null);
       setCategory("kelas_praktikum");
 
@@ -224,7 +207,7 @@ export function LoanRequestForm({
         {/* Kategori */}
         <div className="space-y-2">
           <Label>
-            Kategori Peminjaman <span className="text-destructive">*</span>
+            Kategori <span className="text-destructive">*</span>
           </Label>
           <Select
             value={category}
@@ -268,39 +251,12 @@ export function LoanRequestForm({
           />
         </div>
 
-        {/* Dosen Pembimbing — hanya mahasiswa */}
-        {role === "student" && (
-          <div className="space-y-2 sm:col-span-2">
-            <Label>
-              Dosen Pembimbing <span className="text-destructive">*</span>
-            </Label>
-            <Select value={dosenId} onValueChange={setDosenId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Pilih dosen" />
-              </SelectTrigger>
-              <SelectContent>
-                {dosens.length === 0 ? (
-                  <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                    Belum ada dosen terdaftar
-                  </div>
-                ) : (
-                  dosens.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>
-                      {d.full_name}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
-
-        {/* Upload Proposal — mahasiswa + event */}
+        {/* Upload Proposal — student + event saja */}
         {role === "student" && category === "event_kegiatan" && (
           <div className="space-y-2 sm:col-span-2">
             <Label className="flex items-center gap-2">
               <Paperclip className="size-4" />
-              Upload Proposal Kegiatan (PDF/DOC){" "}
+              Upload Proposal Kegiatan{" "}
               <span className="text-destructive">*</span>
             </Label>
             <Input
@@ -330,6 +286,15 @@ export function LoanRequestForm({
           />
         </div>
       </div>
+
+      {/* Info alur approval */}
+      {getApprovalInfo() && (
+        <div className="rounded-sm bg-blue-500/10 border border-blue-500/20 p-2.5">
+          <p className="text-xs text-blue-700 dark:text-blue-400">
+            📋 <strong>Alur pengajuan:</strong> {getApprovalInfo()}
+          </p>
+        </div>
+      )}
 
       <div className="flex justify-end gap-2">
         {footer}

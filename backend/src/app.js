@@ -8,6 +8,7 @@ const assetRoutes = require("./routes/assets.routes");
 const loanRoutes = require("./routes/loans.routes");
 const approvalRoutes = require("./routes/approvals.routes");
 const userRoutes = require("./routes/users.routes");
+const notificationsRoutes = require("./routes/notifications.routes");
 
 require("./jobs/cron");
 
@@ -43,6 +44,7 @@ app.use("/api/assets", assetRoutes);
 app.use("/api/loans", loanRoutes);
 app.use("/api/approvals", approvalRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/notifications", notificationsRoutes);
 
 // ── Health check ──────────────────────────────────────────────
 app.get("/api/health", (req, res) => {

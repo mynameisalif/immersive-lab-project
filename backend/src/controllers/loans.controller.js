@@ -17,41 +17,74 @@ exports.getAllLoans = async (req, res) => {
       params = [];
 
     if (req.user.role === "student") {
-      // Mahasiswa: hanya lihat milik sendiri
       query = `
         SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-               p.full_name AS requester_name,
-               d.full_name AS dosen_name
+               p.full_name AS requester_name, p.nim_nip,
+               ur.role AS requester_role
         FROM loan_requests lr
         JOIN assets a ON a.id = lr.asset_id
         JOIN profiles p ON p.id = lr.requester_id
-        LEFT JOIN profiles d ON d.id = lr.dosen_id
+        JOIN user_roles ur ON ur.user_id = p.id
         WHERE lr.requester_id = $1
         ORDER BY lr.created_at DESC`;
       params = [req.user.userId];
     } else if (req.user.role === "dosen") {
-      // Dosen: lihat milik sendiri + yang perlu disetujui (dosen_id = diri sendiri)
+      const profileRes = await pool.query(
+        `SELECT is_kaprodi FROM profiles WHERE id = $1`,
+        [req.user.userId],
+      );
+      const isKaprodi = profileRes.rows[0]?.is_kaprodi === true;
+
+      if (isKaprodi) {
+        // Kaprodi: lihat semua pengajuan student + milik sendiri
+        query = `
+          SELECT lr.*, a.name AS asset_name, a.merk, a.type,
+                 p.full_name AS requester_name, p.nim_nip,
+                 ur.role AS requester_role
+          FROM loan_requests lr
+          JOIN assets a ON a.id = lr.asset_id
+          JOIN profiles p ON p.id = lr.requester_id
+          JOIN user_roles ur ON ur.user_id = p.id
+          WHERE ur.role = 'student' OR lr.requester_id = $1
+          ORDER BY lr.created_at DESC`;
+        params = [req.user.userId];
+      } else {
+        // Dosen biasa: hanya milik sendiri
+        query = `
+          SELECT lr.*, a.name AS asset_name, a.merk, a.type,
+                 p.full_name AS requester_name, p.nim_nip,
+                 ur.role AS requester_role
+          FROM loan_requests lr
+          JOIN assets a ON a.id = lr.asset_id
+          JOIN profiles p ON p.id = lr.requester_id
+          JOIN user_roles ur ON ur.user_id = p.id
+          WHERE lr.requester_id = $1
+          ORDER BY lr.created_at DESC`;
+        params = [req.user.userId];
+      }
+    } else if (req.user.role === "staff") {
+      // Staff: hanya milik sendiri
       query = `
         SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-               p.full_name AS requester_name,
-               d.full_name AS dosen_name
+               p.full_name AS requester_name, p.nim_nip,
+               ur.role AS requester_role
         FROM loan_requests lr
         JOIN assets a ON a.id = lr.asset_id
         JOIN profiles p ON p.id = lr.requester_id
-        LEFT JOIN profiles d ON d.id = lr.dosen_id
-        WHERE lr.requester_id = $1 OR lr.dosen_id = $1
+        JOIN user_roles ur ON ur.user_id = p.id
+        WHERE lr.requester_id = $1
         ORDER BY lr.created_at DESC`;
       params = [req.user.userId];
     } else {
       // Admin: lihat semua
       query = `
         SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-               p.full_name AS requester_name,
-               d.full_name AS dosen_name
+               p.full_name AS requester_name, p.nim_nip,
+               ur.role AS requester_role
         FROM loan_requests lr
         JOIN assets a ON a.id = lr.asset_id
         JOIN profiles p ON p.id = lr.requester_id
-        LEFT JOIN profiles d ON d.id = lr.dosen_id
+        JOIN user_roles ur ON ur.user_id = p.id
         ORDER BY lr.created_at DESC`;
     }
 
@@ -69,7 +102,6 @@ exports.getLoanById = async (req, res) => {
     const { rows } = await pool.query(
       `SELECT lr.*, a.name AS asset_name, a.merk, a.type,
               p.full_name AS requester_name, p.nim_nip,
-              d.full_name AS dosen_name,
               json_agg(json_build_object(
                 'unit_code', au.unit_code,
                 'condition', lua.return_condition,
@@ -78,12 +110,10 @@ exports.getLoanById = async (req, res) => {
        FROM loan_requests lr
        JOIN assets a ON a.id = lr.asset_id
        JOIN profiles p ON p.id = lr.requester_id
-       LEFT JOIN profiles d ON d.id = lr.dosen_id
        LEFT JOIN loan_unit_assignments lua ON lua.loan_request_id = lr.id
        LEFT JOIN asset_units au ON au.id = lua.asset_unit_id
        WHERE lr.id = $1
-       GROUP BY lr.id, a.name, a.merk, a.type,
-                p.full_name, p.nim_nip, d.full_name`,
+       GROUP BY lr.id, a.name, a.merk, a.type, p.full_name, p.nim_nip`,
       [req.params.id],
     );
     if (!rows[0])
@@ -97,17 +127,9 @@ exports.getLoanById = async (req, res) => {
 
 // ─── POST ajukan peminjaman baru ──────────────────────────────
 exports.createLoan = async (req, res) => {
-  const {
-    asset_id,
-    quantity,
-    category,
-    borrow_date,
-    return_deadline,
-    dosen_id,
-    notes,
-  } = req.body;
+  const { asset_id, quantity, category, borrow_date, return_deadline, notes } =
+    req.body;
 
-  // Validasi field wajib
   if (!asset_id || !quantity || !category || !borrow_date || !return_deadline)
     return res.status(400).json({ message: "Semua field wajib diisi" });
 
@@ -116,10 +138,9 @@ exports.createLoan = async (req, res) => {
       message: "Tanggal kembali tidak boleh sebelum tanggal pinjam",
     });
 
-  if (req.user.role === "student" && !dosen_id)
-    return res.status(400).json({ message: "Dosen pembimbing wajib dipilih" });
+  const requesterRole = req.user.role;
 
-  if (req.user.role === "student" && category === "event_kegiatan" && !req.file)
+  if (requesterRole === "student" && category === "event_kegiatan" && !req.file)
     return res.status(400).json({
       message: "Proposal kegiatan wajib diupload untuk kategori event",
     });
@@ -128,12 +149,9 @@ exports.createLoan = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Cek & ambil unit yang tersedia (kondisi good & loan_status tersedia)
     const stockRes = await client.query(
       `SELECT id FROM asset_units
-       WHERE asset_id = $1 
-         AND condition = 'good' 
-         AND loan_status = 'tersedia'
+       WHERE asset_id = $1 AND condition = 'good' AND loan_status = 'tersedia'
        LIMIT $2`,
       [asset_id, quantity],
     );
@@ -151,12 +169,17 @@ exports.createLoan = async (req, res) => {
       ? path.extname(req.file.originalname).replace(".", "")
       : null;
 
-    // Insert loan_request
+    // ✅ Set initial status based on requester role
+    // Student → pending (menunggu kaprodi/dosen pembimbing)
+    // Dosen / Staff → approved_dosen (skip kaprodi step, langsung ke admin)
+    const initialStatus =
+      requesterRole === "student" ? "pending" : "approved_dosen";
+
     const { rows } = await client.query(
       `INSERT INTO loan_requests
          (requester_id, asset_id, quantity, category,
-          borrow_date, return_deadline, dosen_id, notes,
-          attachment_url, attachment_name, attachment_type)
+          borrow_date, return_deadline, notes,
+          attachment_url, attachment_name, attachment_type, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
       [
@@ -166,18 +189,16 @@ exports.createLoan = async (req, res) => {
         category,
         borrow_date,
         return_deadline,
-        req.user.role === "student" ? dosen_id : null,
         notes || null,
         attachment_url,
         attachment_name,
         attachment_type,
+        initialStatus,
       ],
     );
 
     const loan = rows[0];
 
-    // INSERT ke loan_unit_assignments untuk setiap unit yang dipilih
-    // Trigger akan otomatis update loan_status di asset_units
     for (const unit of stockRes.rows) {
       await client.query(
         `INSERT INTO loan_unit_assignments (loan_request_id, asset_unit_id)
@@ -186,16 +207,43 @@ exports.createLoan = async (req, res) => {
       );
     }
 
-    // Kirim notifikasi ke dosen pembimbing (jika mahasiswa)
-    if (req.user.role === "student" && dosen_id) {
-      await sendNotif(
-        client,
-        dosen_id,
-        "loan_approval",
-        "Permintaan Persetujuan Peminjaman",
-        `Ada permintaan peminjaman yang memerlukan persetujuan Anda.`,
-        `/approvals/${loan.id}`,
+    // Routing notifikasi berdasarkan role
+    if (requesterRole === "student") {
+      // Student → notif ke semua kaprodi
+      // ✅ JOIN user_roles untuk cek is_kaprodi
+      const kaprodiRes = await client.query(
+        `SELECT p.id FROM profiles p
+         JOIN user_roles ur ON ur.user_id = p.id
+         WHERE ur.role = 'dosen' AND p.is_kaprodi = TRUE`,
       );
+      for (const kp of kaprodiRes.rows) {
+        await sendNotif(
+          client,
+          kp.id,
+          "loan_approval",
+          "Permintaan Peminjaman Mahasiswa",
+          "Ada permintaan peminjaman mahasiswa yang memerlukan persetujuan Anda.",
+          `/approvals`,
+        );
+      }
+    } else {
+      // Staff / Dosen biasa / Kaprodi → notif ke admin
+      // ✅ JOIN user_roles untuk cari admin
+      const adminRes = await client.query(
+        `SELECT p.id FROM profiles p
+         JOIN user_roles ur ON ur.user_id = p.id
+         WHERE ur.role = 'admin'`,
+      );
+      for (const adm of adminRes.rows) {
+        await sendNotif(
+          client,
+          adm.id,
+          "loan_approval",
+          "Permintaan Peminjaman Baru",
+          `Ada permintaan peminjaman dari ${requesterRole} yang memerlukan persetujuan Anda.`,
+          `/approvals`,
+        );
+      }
     }
 
     await client.query("COMMIT");
@@ -211,7 +259,7 @@ exports.createLoan = async (req, res) => {
   }
 };
 
-// ─── POST upload proposal (terpisah, jika ingin upload belakangan) ─
+// ─── POST upload proposal ─────────────────────────────────────
 exports.uploadProposal = async (req, res) => {
   if (!req.file)
     return res.status(400).json({ message: "File tidak ditemukan" });
@@ -242,11 +290,8 @@ exports.uploadProposal = async (req, res) => {
 };
 
 // ─── PATCH konfirmasi pengambilan (admin) ─────────────────────
-// Tambahkan function ini di loans.controller.js
-// Letakkan SEBELUM exports.confirmReturn
-
 exports.confirmPickup = async (req, res) => {
-  const { unit_ids } = req.body; // array UUID asset_units yang dialokasikan
+  const { unit_ids } = req.body;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -267,7 +312,6 @@ exports.confirmPickup = async (req, res) => {
         message: `Jumlah unit yang dialokasikan harus ${loan.quantity}`,
       });
 
-    // Alokasikan unit & tandai tidak tersedia
     for (const uid of unit_ids) {
       await client.query(
         `INSERT INTO loan_unit_assignments (loan_request_id, asset_unit_id)
@@ -280,14 +324,12 @@ exports.confirmPickup = async (req, res) => {
       );
     }
 
-    // Update status peminjaman
     await client.query(
       `UPDATE loan_requests SET status='picked_up', picked_up_at=NOW(), updated_at=NOW()
        WHERE id = $1`,
       [loan.id],
     );
 
-    // Notifikasi ke peminjam
     await sendNotif(
       client,
       loan.requester_id,
@@ -309,14 +351,12 @@ exports.confirmPickup = async (req, res) => {
 };
 
 // ─── PATCH konfirmasi pengembalian (admin) ────────────────────
-// FIXED: Accept both 'picked_up' AND 'approved_admin' status
 exports.confirmReturn = async (req, res) => {
   const { unit_conditions } = req.body;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // ✅ FIX: Accept picked_up ATAU approved_admin
     const loanRes = await client.query(
       `SELECT * FROM loan_requests 
        WHERE id = $1 AND status IN ('picked_up', 'approved_admin', 'overdue')`,
@@ -330,19 +370,16 @@ exports.confirmReturn = async (req, res) => {
 
     const loan = loanRes.rows[0];
 
-    if (!unit_conditions || unit_conditions.length === 0) {
+    if (!unit_conditions || unit_conditions.length === 0)
       return res.status(400).json({ message: "unit_conditions harus ada" });
-    }
 
     for (const uc of unit_conditions) {
-      if (!uc.asset_unit_id || !uc.return_condition) {
+      if (!uc.asset_unit_id || !uc.return_condition)
         return res.status(400).json({
           message: "Setiap unit harus punya asset_unit_id dan return_condition",
         });
-      }
     }
 
-    // Update kondisi setiap unit yang dikembalikan
     for (const uc of unit_conditions) {
       await client.query(
         `UPDATE loan_unit_assignments
@@ -389,6 +426,8 @@ exports.confirmReturn = async (req, res) => {
     client.release();
   }
 };
+
+// ─── GET unit yang terkait peminjaman ─────────────────────────
 exports.getLoanUnits = async (req, res) => {
   const { id } = req.params;
   try {

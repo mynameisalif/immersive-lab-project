@@ -16,11 +16,11 @@ const VALID_ASSET_CATEGORIES = [
 exports.getAllAssets = async (req, res) => {
   try {
     const { rows: assets } = await pool.query(
-      `SELECT id, name, category, description, image_url, merk, type, serial_number, no_spmb, no_po, kelengkapan, created_at, updated_at
+      `SELECT id, name, category, description, image_url, merk, type, no_pr, no_po, kelengkapan, created_at, updated_at
        FROM assets ORDER BY created_at DESC`,
     );
     const { rows: units } = await pool.query(
-      `SELECT id, asset_id, unit_code, is_available, condition, loan_status, created_at, updated_at
+      `SELECT id, asset_id, unit_code, serial_number, is_available, condition, loan_status, created_at, updated_at
        FROM asset_units ORDER BY unit_code`,
     );
     res.json({ data: { assets, units } });
@@ -36,12 +36,12 @@ exports.createAsset = async (req, res) => {
     category,
     merk,
     type,
-    serial_number,
-    no_spmb,
+    no_pr,
     no_po,
     kelengkapan,
     image_url,
     units: numUnits = 1,
+    unitSerialNumbers = [], // Array of S/N untuk setiap unit
   } = req.body;
 
   // Validasi field wajib
@@ -63,7 +63,7 @@ exports.createAsset = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // ✅ CEK DUPLIKAT 1: kode_aset sudah ada
+    // ✅ CEK DUPLIKAT: kode_aset sudah ada
     const dupKode = await client.query(
       `SELECT id, name FROM assets WHERE kode_aset = $1`,
       [kodeAset],
@@ -75,52 +75,17 @@ exports.createAsset = async (req, res) => {
       });
     }
 
-    // ✅ CEK DUPLIKAT 2: kombinasi merk + type + serial_number sudah ada
-    if (serial_number) {
-      const dupSerial = await client.query(
-        `SELECT id, name, kode_aset FROM assets 
-         WHERE LOWER(merk) = LOWER($1) 
-           AND LOWER(type) = LOWER($2) 
-           AND LOWER(serial_number) = LOWER($3)`,
-        [merk, type || "", serial_number],
-      );
-      if (dupSerial.rows.length > 0) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          message: `Aset dengan merk "${merk}", type "${type}", S/N "${serial_number}" sudah ada (${dupSerial.rows[0].kode_aset}). Gunakan form Update Aset untuk menambah unit.`,
-        });
-      }
-    }
-
-    // ✅ CEK DUPLIKAT 3: kombinasi merk + type + no_spmb sudah ada
-    if (no_spmb) {
-      const dupSpmb = await client.query(
-        `SELECT id, name, kode_aset FROM assets 
-         WHERE LOWER(merk) = LOWER($1) 
-           AND LOWER(type) = LOWER($2) 
-           AND LOWER(no_spmb) = LOWER($3)`,
-        [merk, type || "", no_spmb],
-      );
-      if (dupSpmb.rows.length > 0) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          message: `Aset dengan merk "${merk}", type "${type}", No. SPMB "${no_spmb}" sudah ada (${dupSpmb.rows[0].kode_aset}). Gunakan form Update Aset untuk menambah unit.`,
-        });
-      }
-    }
-
     const name = [merk, type].filter(Boolean).join(" ") || kodeAset;
 
     const { rows: assetRows } = await client.query(
-      `INSERT INTO assets (name, category, merk, type, serial_number, no_spmb, no_po, kelengkapan, image_url, kode_aset)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      `INSERT INTO assets (name, category, merk, type, no_pr, no_po, kelengkapan, image_url, kode_aset)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [
         name,
         category,
         merk,
         type || null,
-        serial_number || null,
-        no_spmb || null,
+        no_pr || null,
         no_po || null,
         kelengkapan || null,
         image_url || null,
@@ -129,10 +94,21 @@ exports.createAsset = async (req, res) => {
     );
     const assetId = assetRows[0].id;
 
-    // Insert units dengan loan_status
+    // 🔢 Find next available sequential unit code number
+    const { rows: maxRows } = await client.query(
+      `SELECT MAX(CAST(SUBSTRING(unit_code, 10) AS INTEGER)) as max_num 
+       FROM asset_units 
+       WHERE unit_code LIKE 'MNP/IPRO/%'`,
+    );
+    const maxNum =
+      parseInt(maxRows[0]?.max_num || paddedNum) || parseInt(paddedNum);
+    const startNum = maxNum + 1;
+
+    // Insert units dengan unit_code sequential (MNP/IPRO/0067, 0068, 0069, ...)
     const unitValues = Array.from({ length: numUnits }, (_, i) => [
       assetId,
-      `${kodeAset}-${String(i + 1).padStart(3, "0")}`,
+      `MNP/IPRO/${String(startNum + i).padStart(4, "0")}`,
+      unitSerialNumbers[i] || null, // S/N bisa berbeda per unit
       true,
       "good",
       "tersedia",
@@ -142,12 +118,12 @@ exports.createAsset = async (req, res) => {
       const placeholders = unitValues
         .map(
           (_, i) =>
-            `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`,
+            `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`,
         )
         .join(",");
       const flatValues = unitValues.flat();
       await client.query(
-        `INSERT INTO asset_units (asset_id, unit_code, is_available, condition, loan_status) VALUES ${placeholders}`,
+        `INSERT INTO asset_units (asset_id, unit_code, serial_number, is_available, condition, loan_status) VALUES ${placeholders}`,
         flatValues,
       );
     }
@@ -173,13 +149,14 @@ exports.updateAsset = async (req, res) => {
     category,
     merk,
     type,
-    serial_number,
-    no_spmb,
+    no_pr,
     no_po,
     kelengkapan,
     image_url,
     addUnits = 0,
+    additionalSerialNumbers = [], // Array of S/N untuk unit baru
   } = req.body;
+
   if (!kode_aset_num)
     return res.status(400).json({ message: "kode_aset_num wajib diisi" });
 
@@ -191,14 +168,13 @@ exports.updateAsset = async (req, res) => {
     const name = [merk, type].filter(Boolean).join(" ") || kodeAset;
 
     const { rowCount } = await client.query(
-      `UPDATE assets SET name = $1, category = $2, merk = $3, type = $4, serial_number = $5, no_spmb = $6, no_po = $7, kelengkapan = $8, image_url = $9, kode_aset = $10, updated_at = NOW() WHERE id = $11`,
+      `UPDATE assets SET name = $1, category = $2, merk = $3, type = $4, no_pr = $5, no_po = $6, kelengkapan = $7, image_url = $8, kode_aset = $9, updated_at = NOW() WHERE id = $10`,
       [
         name,
         category,
         merk,
         type || null,
-        serial_number || null,
-        no_spmb || null,
+        no_pr || null,
         no_po || null,
         kelengkapan || null,
         image_url || null,
@@ -212,28 +188,34 @@ exports.updateAsset = async (req, res) => {
     }
 
     if (addUnits > 0) {
-      const { rows: countRows } = await client.query(
-        `SELECT COUNT(*) as cnt FROM asset_units WHERE asset_id = $1`,
-        [id],
+      // 🔢 Find next available sequential unit code number
+      const { rows: maxRows } = await client.query(
+        `SELECT MAX(CAST(SUBSTRING(unit_code, 10) AS INTEGER)) as max_num 
+         FROM asset_units 
+         WHERE unit_code LIKE 'MNP/IPRO/%'`,
       );
-      const currentCount = parseInt(countRows[0].cnt, 10);
-      const startNum = currentCount + 1;
+      const maxNum =
+        parseInt(maxRows[0]?.max_num || paddedNum) || parseInt(paddedNum);
+      const startNum = maxNum + 1;
+
       const unitValues = Array.from({ length: addUnits }, (_, i) => [
         id,
-        `${kodeAset}-${String(startNum + i).padStart(3, "0")}`,
+        `MNP/IPRO/${String(startNum + i).padStart(4, "0")}`,
+        additionalSerialNumbers[i] || null, // S/N bisa berbeda per unit
         true,
         "good",
         "tersedia",
       ]);
+
       const placeholders = unitValues
         .map(
           (_, i) =>
-            `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`,
+            `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`,
         )
         .join(",");
       const flatValues = unitValues.flat();
       await client.query(
-        `INSERT INTO asset_units (asset_id, unit_code, is_available, condition, loan_status) VALUES ${placeholders}`,
+        `INSERT INTO asset_units (asset_id, unit_code, serial_number, is_available, condition, loan_status) VALUES ${placeholders}`,
         flatValues,
       );
     }
@@ -284,7 +266,7 @@ exports.deleteAsset = async (req, res) => {
 
 exports.updateUnit = async (req, res) => {
   const { unitId } = req.params;
-  const { condition, is_available } = req.body;
+  const { condition, is_available, serial_number } = req.body;
 
   const validConditions = ["good", "minor", "major"];
 
@@ -309,7 +291,16 @@ exports.updateUnit = async (req, res) => {
       values.push(is_available);
     }
 
-    if (condition || is_available !== undefined) {
+    if (serial_number !== undefined) {
+      updates.push(`serial_number = $${paramIndex++}`);
+      values.push(serial_number || null);
+    }
+
+    if (
+      condition ||
+      is_available !== undefined ||
+      serial_number !== undefined
+    ) {
       updates.push(`updated_at = NOW()`);
     }
 
@@ -357,7 +348,6 @@ exports.deleteUnit = async (req, res) => {
       .json({ message: "Gagal menghapus unit", error: err.message });
   }
 };
-// Tambahkan fungsi ini ke assets.controller.js
 
 exports.getAssetStats = async (req, res) => {
   try {
@@ -388,8 +378,6 @@ exports.getAssetStats = async (req, res) => {
     res.status(500).json({ message: "Gagal fetch stats aset" });
   }
 };
-
-// Tambahkan function ini ke assets.controller.js
 
 exports.getAvailableAssets = async (req, res) => {
   try {

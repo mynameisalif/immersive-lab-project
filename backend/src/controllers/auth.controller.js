@@ -13,13 +13,12 @@ exports.register = async (req, res) => {
     password,
   } = req.body;
 
-  // Validasi field wajib
   if (!email || !full_name || !password)
     return res
       .status(400)
       .json({ message: "Email, nama, dan password wajib diisi" });
 
-  const validRoles = ["student", "dosen", "admin"];
+  const validRoles = ["student", "dosen", "admin", "staff"]; // ✅ tambah staff
   if (!validRoles.includes(role))
     return res.status(400).json({ message: "Role tidak valid" });
 
@@ -27,7 +26,6 @@ exports.register = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Cek email sudah terdaftar
     const exist = await client.query(
       "SELECT id FROM profiles WHERE email = $1",
       [email],
@@ -37,10 +35,9 @@ exports.register = async (req, res) => {
       return res.status(409).json({ message: "Email sudah terdaftar" });
     }
 
-    // Hash password
     const hashed = await bcrypt.hash(password, 12);
 
-    // Insert ke profiles dengan password_hash sekaligus
+    // ✅ FIX: query parameter count match (5 params → $1-$5)
     const { rows } = await client.query(
       `INSERT INTO profiles (email, full_name, nim_nip, phone, password_hash)
        VALUES ($1, $2, $3, $4, $5)
@@ -49,7 +46,6 @@ exports.register = async (req, res) => {
     );
     const user = rows[0];
 
-    // Insert role
     await client.query(
       `INSERT INTO user_roles (user_id, role) VALUES ($1, $2)`,
       [user.id, role],
@@ -59,20 +55,14 @@ exports.register = async (req, res) => {
 
     return res.status(201).json({
       message: "Registrasi berhasil",
-      data: {
-        id: user.id,
-        email: user.email,
-        full_name: user.full_name,
-        role,
-      },
+      data: { id: user.id, email: user.email, full_name: user.full_name, role },
     });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Register error:", err.message);
-    return res.status(500).json({
-      message: "Terjadi kesalahan server",
-      detail: err.message,
-    });
+    return res
+      .status(500)
+      .json({ message: "Terjadi kesalahan server", detail: err.message });
   } finally {
     client.release();
   }
@@ -89,6 +79,7 @@ exports.login = async (req, res) => {
     const userRow = await pool.query(
       `SELECT p.id, p.email, p.full_name, p.password_hash,
               p.is_blocked, p.blocked_reason, p.auto_locked,
+              p.is_kaprodi,
               ur.role
        FROM profiles p
        LEFT JOIN user_roles ur ON ur.user_id = p.id
@@ -102,7 +93,6 @@ exports.login = async (req, res) => {
       userFound &&
       (await bcrypt.compare(password, userRow.rows[0].password_hash || ""));
 
-    // Simpan log login attempt
     await pool.query(
       `INSERT INTO login_attempts (user_id, email, success)
        VALUES ($1, $2, $3)`,
@@ -114,7 +104,6 @@ exports.login = async (req, res) => {
 
     const user = userRow.rows[0];
 
-    // Cek akun diblokir
     if (user.is_blocked)
       return res.status(403).json({
         message: user.auto_locked
@@ -122,7 +111,6 @@ exports.login = async (req, res) => {
           : `Akun diblokir. Alasan: ${user.blocked_reason}`,
       });
 
-    // Cek auto-lock (5x gagal dalam 1 jam)
     const failCount = await pool.query(
       `SELECT COUNT(*) FROM login_attempts
        WHERE user_id = $1 AND success = FALSE
@@ -149,7 +137,6 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Buat JWT token
     const token = jwt.sign(
       { userId: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
@@ -164,23 +151,25 @@ exports.login = async (req, res) => {
         email: user.email,
         full_name: user.full_name,
         role: user.role,
+        is_kaprodi: user.is_kaprodi ?? false, // ✅ return is_kaprodi saat login
       },
     });
   } catch (err) {
     console.error("Login error:", err.message);
-    return res.status(500).json({
-      message: "Terjadi kesalahan server",
-      detail: err.message,
-    });
+    return res
+      .status(500)
+      .json({ message: "Terjadi kesalahan server", detail: err.message });
   }
 };
 
-// ─── Get Profile ─────────────────────────────────────────────
+// ─── Get Profile (/api/auth/me) ───────────────────────────────
 exports.getProfile = async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT p.id, p.email, p.full_name, p.nim_nip, p.phone,
-              p.is_blocked, p.created_at, ur.role
+              p.is_kaprodi,                   
+              p.is_blocked, p.created_at,
+              ur.role
        FROM profiles p
        LEFT JOIN user_roles ur ON ur.user_id = p.id
        WHERE p.id = $1`,
@@ -188,13 +177,13 @@ exports.getProfile = async (req, res) => {
     );
     if (!rows[0])
       return res.status(404).json({ message: "User tidak ditemukan" });
+
     return res.json({ data: rows[0] });
   } catch (err) {
     console.error("getProfile error:", err.message);
-    return res.status(500).json({
-      message: "Terjadi kesalahan server",
-      detail: err.message,
-    });
+    return res
+      .status(500)
+      .json({ message: "Terjadi kesalahan server", detail: err.message });
   }
 };
 
@@ -203,17 +192,14 @@ exports.logout = (req, res) => {
   return res.json({ message: "Logout berhasil. Hapus token di sisi client." });
 };
 
-// ─── Register Admin ───────────────────────────────────────────
 exports.registerAdmin = async (req, res) => {
   await exports.register(req, res, "admin");
 };
 
-// ─── Register Dosen ────────────────────────────────────────────
 exports.registerDosen = async (req, res) => {
   await exports.register(req, res, "dosen");
 };
 
-// ─── Register Mahasiswa ─────────────────────────────────────────
 exports.registerMahasiswa = async (req, res) => {
   await exports.register(req, res, "student");
 };

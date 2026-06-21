@@ -11,7 +11,7 @@ export type LoanStatus =
 
 const map: Record<LoanStatus, { label: string; className: string }> = {
   pending_dosen: {
-    label: "Menunggu Dosen",
+    label: "Menunggu Kaprodi", // ✅ update label
     className: "bg-warning/15 text-warning-foreground border-warning/40",
   },
   pending_admin: {
@@ -51,6 +51,7 @@ export function StatusBadge({
     label: status,
     className: "bg-muted text-muted-foreground border-border",
   };
+
   return (
     <span
       className={cn(

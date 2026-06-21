@@ -47,6 +47,7 @@ import {
 import { EmptyState } from "../components/common/EmptyState";
 import { cn } from "../lib/utils";
 import api from "../lib/api";
+
 const CATEGORY_OPTIONS = [
   "Battery",
   "Camera",
@@ -73,8 +74,7 @@ interface Asset {
   description: string | null;
   merk: string | null;
   type: string | null;
-  serial_number: string | null;
-  no_spmb: string | null;
+  no_pr: string | null;
   no_po: string | null;
   kelengkapan: string | null;
   kode_aset: string | null;
@@ -85,9 +85,10 @@ interface Unit {
   id: string;
   asset_id: string;
   unit_code: string;
+  serial_number: string | null;
   is_available: boolean;
   condition: "good" | "minor" | "major";
-  loan_status: "tersedia" | "dipinjam" | "tidak_tersedia"; // TAMBAH INI
+  loan_status: "tersedia" | "dipinjam" | "tidak_tersedia";
 }
 
 function emptyForm() {
@@ -96,11 +97,11 @@ function emptyForm() {
     category: "",
     merk: "",
     type: "",
-    serial_number: "",
-    no_spmb: "",
+    no_pr: "",
     no_po: "",
     kelengkapan: "",
     units: 1,
+    unitSerialNumbers: [""],
   };
 }
 
@@ -160,7 +161,7 @@ function ManajemenAset() {
     const q = search.trim().toLowerCase();
     if (!q) return assets;
     return assets.filter((a: Asset) =>
-      [a.merk, a.type, a.category, a.serial_number, a.kode_aset, a.name]
+      [a.merk, a.type, a.category, a.no_pr, a.kode_aset, a.name]
         .filter(Boolean)
         .some((v) => v && v.toLowerCase().includes(q)),
     );
@@ -184,11 +185,11 @@ function ManajemenAset() {
         category: form.category,
         merk: form.merk,
         type: form.type || null,
-        serial_number: form.serial_number || null,
-        no_spmb: form.no_spmb || null,
+        no_pr: form.no_pr || null,
         no_po: form.no_po || null,
         kelengkapan: form.kelengkapan || null,
         units: form.units,
+        unitSerialNumbers: form.unitSerialNumbers.filter(Boolean),
       });
       toast.success("Aset berhasil ditambahkan");
       setOpenAdd(false);
@@ -207,6 +208,16 @@ function ManajemenAset() {
     });
   };
 
+  const handleUnitsChange = (newCount: number) => {
+    setForm((prev) => ({
+      ...prev,
+      units: newCount,
+      unitSerialNumbers: Array(newCount)
+        .fill("")
+        .map((_, i) => prev.unitSerialNumbers[i] || ""),
+    }));
+  };
+
   return (
     <>
       <PageHeader
@@ -219,7 +230,7 @@ function ManajemenAset() {
                 <Plus className="size-4" /> Tambah Aset
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Tambah Aset Baru</DialogTitle>
               </DialogHeader>
@@ -273,20 +284,13 @@ function ManajemenAset() {
                     placeholder="A7 III"
                   />
                 </Field>
-                <Field label="S/N">
+                <Field label="NO.PR">
                   <Input
-                    value={form.serial_number}
+                    value={form.no_pr}
                     onChange={(e) =>
-                      setForm({ ...form, serial_number: e.target.value })
+                      setForm({ ...form, no_pr: e.target.value })
                     }
-                  />
-                </Field>
-                <Field label="No. SPMB">
-                  <Input
-                    value={form.no_spmb}
-                    onChange={(e) =>
-                      setForm({ ...form, no_spmb: e.target.value })
-                    }
+                    placeholder="PR-2024-001"
                   />
                 </Field>
                 <Field label="No. PO">
@@ -295,6 +299,7 @@ function ManajemenAset() {
                     onChange={(e) =>
                       setForm({ ...form, no_po: e.target.value })
                     }
+                    placeholder="PO-2024-001"
                   />
                 </Field>
                 <Field label="Jumlah Unit">
@@ -302,9 +307,7 @@ function ManajemenAset() {
                     type="number"
                     min={1}
                     value={form.units}
-                    onChange={(e) =>
-                      setForm({ ...form, units: Number(e.target.value) })
-                    }
+                    onChange={(e) => handleUnitsChange(Number(e.target.value))}
                   />
                 </Field>
                 <div className="sm:col-span-2">
@@ -318,6 +321,40 @@ function ManajemenAset() {
                     />
                   </Field>
                 </div>
+
+                {/* Serial Number inputs untuk setiap unit */}
+                {form.units > 0 && (
+                  <div className="sm:col-span-2">
+                    <div className="border-t pt-3 mt-2">
+                      <p className="text-xs font-medium mb-2 text-muted-foreground">
+                        Serial Number (S/N) per Unit (opsional, bisa berbeda
+                        untuk setiap unit)
+                      </p>
+                      <div className="space-y-2">
+                        {Array.from({ length: form.units }).map((_, i) => (
+                          <div key={i} className="flex items-end gap-2">
+                            <div className="flex-1">
+                              <Label className="text-xs">Unit {i + 1}</Label>
+                              <Input
+                                value={form.unitSerialNumbers[i] || ""}
+                                onChange={(e) => {
+                                  const newSNs = [...form.unitSerialNumbers];
+                                  newSNs[i] = e.target.value;
+                                  setForm({
+                                    ...form,
+                                    unitSerialNumbers: newSNs,
+                                  });
+                                }}
+                                placeholder={`Misal: S01-6224846-I`}
+                                className="text-xs"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button variant="ghost" onClick={() => setOpenAdd(false)}>
@@ -337,7 +374,7 @@ function ManajemenAset() {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Cari merk, type, kategori, S/N, kode…"
+          placeholder="Cari merk, type, kategori, NO.PR, kode…"
           className="pl-9"
         />
       </div>
@@ -364,8 +401,7 @@ function ManajemenAset() {
                 <th className="px-3 py-3">Merk</th>
                 <th className="px-3 py-3">Type</th>
                 <th className="px-3 py-3">Kategori</th>
-                <th className="px-3 py-3">S/N</th>
-                <th className="px-3 py-3">No. SPMB</th>
+                <th className="px-3 py-3">NO.PR</th>
                 <th className="px-3 py-3">No. PO</th>
                 <th className="px-3 py-3">Kelengkapan</th>
                 <th className="px-3 py-3 text-success">Stok Baik</th>
@@ -401,10 +437,7 @@ function ManajemenAset() {
                       <td className="px-3 py-3">{a.type ?? "—"}</td>
                       <td className="px-3 py-3">{a.category}</td>
                       <td className="px-3 py-3 font-mono text-xs">
-                        {a.serial_number ?? "—"}
-                      </td>
-                      <td className="px-3 py-3 font-mono text-xs">
-                        {a.no_spmb ?? "—"}
+                        {a.no_pr ?? "—"}
                       </td>
                       <td className="px-3 py-3 font-mono text-xs">
                         {a.no_po ?? "—"}
@@ -443,13 +476,16 @@ function ManajemenAset() {
                     </tr>
                     {isOpen && (
                       <tr className="bg-muted/20">
-                        <td colSpan={13} className="px-6 py-3">
+                        <td colSpan={12} className="px-6 py-3">
                           <div className="rounded-lg border bg-card">
                             <table className="w-full text-xs">
                               <thead className="text-muted-foreground">
                                 <tr className="border-b">
                                   <th className="px-3 py-2 text-left">
                                     Kode Unit
+                                  </th>
+                                  <th className="px-3 py-2 text-left">
+                                    Serial Number
                                   </th>
                                   <th className="px-3 py-2 text-left">
                                     Status
@@ -463,6 +499,9 @@ function ManajemenAset() {
                                   <tr key={u.id}>
                                     <td className="px-3 py-2 font-mono">
                                       {u.unit_code}
+                                    </td>
+                                    <td className="px-3 py-2 font-mono text-[10px]">
+                                      {u.serial_number ?? "—"}
                                     </td>
                                     <td className="px-3 py-2">
                                       <span
@@ -520,7 +559,7 @@ function ManajemenAset() {
                                 {aUnits.length === 0 && (
                                   <tr>
                                     <td
-                                      colSpan={4}
+                                      colSpan={5}
                                       className="px-3 py-3 text-center text-muted-foreground"
                                     >
                                       Tidak ada unit.
@@ -593,11 +632,11 @@ function EditAssetDialog({
     category: asset.category,
     merk: asset.merk ?? "",
     type: asset.type ?? "",
-    serial_number: asset.serial_number ?? "",
-    no_spmb: asset.no_spmb ?? "",
+    no_pr: asset.no_pr ?? "",
     no_po: asset.no_po ?? "",
     kelengkapan: asset.kelengkapan ?? "",
     addUnits: 0,
+    additionalSerialNumbers: [""],
   });
   const [saving, setSaving] = useState(false);
 
@@ -612,11 +651,11 @@ function EditAssetDialog({
         category: f.category,
         merk: f.merk,
         type: f.type || null,
-        serial_number: f.serial_number || null,
-        no_spmb: f.no_spmb || null,
+        no_pr: f.no_pr || null,
         no_po: f.no_po || null,
         kelengkapan: f.kelengkapan || null,
         addUnits: f.addUnits,
+        additionalSerialNumbers: f.additionalSerialNumbers.filter(Boolean),
       });
       toast.success("Aset berhasil diperbarui");
       onClose();
@@ -627,9 +666,19 @@ function EditAssetDialog({
     }
   };
 
+  const handleAddUnitsChange = (newCount: number) => {
+    setF((prev) => ({
+      ...prev,
+      addUnits: newCount,
+      additionalSerialNumbers: Array(newCount)
+        .fill("")
+        .map((_, i) => prev.additionalSerialNumbers[i] || ""),
+    }));
+  };
+
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Update Aset</DialogTitle>
         </DialogHeader>
@@ -678,16 +727,10 @@ function EditAssetDialog({
               onChange={(e) => setF({ ...f, type: e.target.value })}
             />
           </Field>
-          <Field label="S/N">
+          <Field label="NO.PR">
             <Input
-              value={f.serial_number}
-              onChange={(e) => setF({ ...f, serial_number: e.target.value })}
-            />
-          </Field>
-          <Field label="No. SPMB">
-            <Input
-              value={f.no_spmb}
-              onChange={(e) => setF({ ...f, no_spmb: e.target.value })}
+              value={f.no_pr}
+              onChange={(e) => setF({ ...f, no_pr: e.target.value })}
             />
           </Field>
           <Field label="No. PO">
@@ -701,7 +744,7 @@ function EditAssetDialog({
               type="number"
               min={0}
               value={f.addUnits}
-              onChange={(e) => setF({ ...f, addUnits: Number(e.target.value) })}
+              onChange={(e) => handleAddUnitsChange(Number(e.target.value))}
             />
           </Field>
           <div className="sm:col-span-2">
@@ -713,6 +756,36 @@ function EditAssetDialog({
               />
             </Field>
           </div>
+
+          {/* Serial Number inputs untuk unit tambahan */}
+          {f.addUnits > 0 && (
+            <div className="sm:col-span-2">
+              <div className="border-t pt-3 mt-2">
+                <p className="text-xs font-medium mb-2 text-muted-foreground">
+                  Serial Number (S/N) untuk Unit Baru (opsional, bisa berbeda)
+                </p>
+                <div className="space-y-2">
+                  {Array.from({ length: f.addUnits }).map((_, i) => (
+                    <div key={i} className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <Label className="text-xs">Unit Baru {i + 1}</Label>
+                        <Input
+                          value={f.additionalSerialNumbers[i] || ""}
+                          onChange={(e) => {
+                            const newSNs = [...f.additionalSerialNumbers];
+                            newSNs[i] = e.target.value;
+                            setF({ ...f, additionalSerialNumbers: newSNs });
+                          }}
+                          placeholder={`Misal: S01-6224847-J`}
+                          className="text-xs"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         <DialogFooter className="sm:justify-between">
           <DeleteAssetButton
@@ -743,16 +816,15 @@ function EditUnitDialog({
   onClose: () => void;
 }) {
   const [condition, setCondition] = useState(unit.condition);
+  const [serial_number, setSerialNumber] = useState(unit.serial_number || "");
   const [saving, setSaving] = useState(false);
 
   // OTOMATIS DETERMINE STATUS
   const getAutoStatus = (cond: string): boolean => {
-    // Jika kondisi rusak ringan ATAU rusak berat → NOT available (false)
     if (cond === "minor" || cond === "major") {
-      return false; // Tidak tersedia
+      return false;
     }
-    // Jika kondisi baik → AVAILABLE (true)
-    return true; // Tersedia
+    return true;
   };
 
   const autoAvailable = getAutoStatus(condition);
@@ -764,9 +836,10 @@ function EditUnitDialog({
       setSaving(true);
       await api.patch(`/api/assets/units/${unit.id}`, {
         condition,
-        is_available: autoAvailable, // AUTO berdasarkan condition
+        is_available: autoAvailable,
+        serial_number: serial_number || null,
       });
-      toast.success("Status unit diperbarui (otomatis)");
+      toast.success("Unit berhasil diperbarui");
       onClose();
     } catch (err: any) {
       toast.error(err.response?.data?.message ?? "Gagal memperbarui unit");
@@ -796,6 +869,14 @@ function EditUnitDialog({
                 <SelectItem value="major">Rusak Berat</SelectItem>
               </SelectContent>
             </Select>
+          </Field>
+
+          <Field label="Serial Number (S/N)">
+            <Input
+              value={serial_number}
+              onChange={(e) => setSerialNumber(e.target.value)}
+              placeholder="S01-6224846-I"
+            />
           </Field>
 
           {/* STATUS OTOMATIS - READ ONLY */}

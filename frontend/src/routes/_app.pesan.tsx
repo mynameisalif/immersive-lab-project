@@ -1,98 +1,146 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { PageHeader } from "@/components/common/PageHeader";
-import { MessageSquare } from "lucide-react";
-import { useAuth } from "@/lib/auth";
-import { EmptyState } from "@/components/common/EmptyState";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { getNotifications, markNotifRead } from "@/services/user.service";
-import api from "@/lib/api";
+import { PageHeader } from "../components/common/PageHeader";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Mail, Search, Trash2, Eye, Loader2 } from "lucide-react";
+import { EmptyState } from "../components/common/EmptyState";
+import api from "../lib/api";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/pesan")({
-  component: PesanPage,
+  component: Pesan,
   head: () => ({ meta: [{ title: "Pesan · MNP Lab Loan" }] }),
 });
 
-interface N {
+interface Notification {
   id: string;
+  user_id: string;
+  type: string;
   title: string;
   message: string;
-  type: string;
+  link?: string;
   is_read: boolean;
   created_at: string;
-  link: string | null;
 }
 
-// Format tanggal manual (fix hydration)
-const formatDate = (d: string) => {
-  const dt = new Date(d);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const day = pad(dt.getDate());
-  const month = pad(dt.getMonth() + 1);
-  const year = dt.getFullYear();
-  const hour = pad(dt.getHours());
-  const min = pad(dt.getMinutes());
-  return `${day}/${month}/${year} ${hour}:${min}`;
-};
-
-function PesanPage() {
-  const { user } = useAuth();
-  const [rows, setRows] = useState<N[]>([]);
+function Pesan() {
+  const navigate = useNavigate(); // ✅ TanStack Router navigation
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
+  const [marking, setMarking] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
-  const load = async () => {
-    if (!user) return;
+  const loadNotifications = async () => {
     try {
       setLoading(true);
-      const res = await getNotifications();
-      const data: N[] = (res.data?.data ?? []).map((n: any) => ({
-        id: n.id,
-        title: n.title,
-        message: n.message,
-        type: n.type,
-        is_read: n.is_read,
-        created_at: n.created_at,
-        link: n.link ?? null,
-      }));
-      // Sort by created_at descending
-      data.sort(
-        (a: N, b: N) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-      );
-      setRows(data);
-    } catch {
-      setRows([]);
+      const res = await api.get("/api/notifications");
+      setNotifications(res.data?.data ?? []);
+    } catch (err) {
+      console.error("Error loading notifications:", err);
+      toast.error("Gagal memuat pesan");
+      setNotifications([]);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    void load();
-  }, [user]);
-
-  const markAll = async () => {
-    if (!user) return;
+  const handleMarkAsRead = async (id: string) => {
     try {
-      // Update semua unread notif menjadi read
-      await api.patch("/api/users/notifications/mark-all-read");
-      void load();
-    } catch {
-      // silent fail
+      setMarking(id);
+      await api.patch(`/api/notifications/${id}/read`);
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+      );
+      toast.success("Pesan ditandai sudah dibaca");
+    } catch (err) {
+      console.error("Error marking as read:", err);
+      toast.error("Gagal tandai pesan");
+    } finally {
+      setMarking(null);
     }
   };
 
-  const markOne = async (id: string) => {
+  const handleDelete = async (id: string) => {
     try {
-      await markNotifRead(id);
-      // Update UI optimistically
-      setRows((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
-      );
-    } catch {
-      // silent fail
+      setDeleting(id);
+      await api.delete(`/api/notifications/${id}`);
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      toast.success("Pesan dihapus");
+    } catch (err) {
+      console.error("Error deleting notification:", err);
+      toast.error("Gagal hapus pesan");
+    } finally {
+      setDeleting(null);
     }
+  };
+
+  // ✅ Handle "Lihat Detail" navigation using TanStack Router
+  const handleNavigateToLink = (link: string) => {
+    // Map notification links to correct TanStack Router paths
+    const linkMap: Record<string, string> = {
+      "/approvals": "/approval",
+      "/approvals/": "/approval",
+      "/loans": "/pinjaman",
+      "/loans/": "/pinjaman",
+      "/peminjaman": "/pinjaman",
+    };
+
+    // Normalize the link
+    const normalizedLink = linkMap[link] ?? link;
+
+    try {
+      navigate({ to: normalizedLink as any });
+    } catch {
+      // Fallback jika route tidak ada
+      console.warn("Route not found:", normalizedLink);
+      toast.error("Halaman tidak ditemukan");
+    }
+  };
+
+  useEffect(() => {
+    void loadNotifications();
+    const interval = setInterval(() => void loadNotifications(), 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const filtered = notifications.filter((n) =>
+    [n.title, n.message, n.type]
+      .filter(Boolean)
+      .some((v) => v && v.toLowerCase().includes(search.toLowerCase())),
+  );
+
+  const getTypeBadge = (type: string) => {
+    const typeMap: Record<string, { label: string; variant: any }> = {
+      loan_request_pending: {
+        label: "Permintaan Peminjaman",
+        variant: "outline",
+      },
+      loan_request_approved_dosen: {
+        label: "Disetujui Kaprodi",
+        variant: "secondary",
+      },
+      loan_request_approved_admin: {
+        label: "Disetujui Admin",
+        variant: "default",
+      },
+      loan_approved_admin: { label: "Disetujui Admin", variant: "default" },
+      loan_request_rejected: { label: "Ditolak", variant: "destructive" },
+      loan_pickup_reminder: {
+        label: "Pengingat Pengambilan",
+        variant: "outline",
+      },
+      loan_return_reminder: {
+        label: "Pengingat Pengembalian",
+        variant: "outline",
+      },
+      loan_overdue: { label: "Terlambat", variant: "destructive" },
+      test: { label: "Test", variant: "outline" },
+    };
+    const config = typeMap[type] || { label: type, variant: "outline" };
+    return <Badge variant={config.variant as any}>{config.label}</Badge>;
   };
 
   return (
@@ -100,53 +148,126 @@ function PesanPage() {
       <PageHeader
         title="Pesan"
         description="Riwayat pesan dan pemberitahuan terkait peminjaman Anda."
-        actions={
-          <Button variant="ghost-navy" onClick={markAll} disabled={loading}>
-            Tandai semua dibaca
-          </Button>
-        }
       />
 
-      {loading ? (
+      {/* Search bar */}
+      <div className="mt-6 mb-4 relative max-w-md">
+        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Cari pesan..."
+          className="pl-9"
+        />
+      </div>
+
+      {/* Notifications list */}
+      {loading && notifications.length === 0 ? (
         <div className="mt-8 text-center text-sm text-muted-foreground">
-          Memuat pesan…
+          <Loader2 className="h-4 w-4 animate-spin mx-auto mb-2" />
+          Memuat pesan...
         </div>
-      ) : rows.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="mt-8">
           <EmptyState
-            icon={MessageSquare}
+            icon={Mail}
             title="Belum ada pesan"
-            description="Pesan akan muncul di sini."
+            description={
+              notifications.length === 0
+                ? "Belum ada pesan masuk. Pesan akan muncul ketika ada aktivitas peminjaman."
+                : "Tidak ada pesan yang cocok dengan pencarian."
+            }
           />
         </div>
       ) : (
-        <ul className="mt-6 divide-y rounded-xl border bg-card shadow-(--shadow-card)">
-          {rows.map((n) => (
-            <li
-              key={n.id}
-              onClick={() => markOne(n.id)}
-              className={cn(
-                "flex cursor-pointer gap-3 px-5 py-4 transition-colors hover:bg-muted/40",
-                !n.is_read && "bg-accent/5",
-              )}
+        <div className="mt-6 space-y-3">
+          {filtered.map((notification) => (
+            <div
+              key={notification.id}
+              className={`border rounded-lg p-4 transition ${
+                notification.is_read
+                  ? "bg-muted/30 opacity-70"
+                  : "bg-card border-primary/30"
+              }`}
             >
-              <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <MessageSquare className="size-4" />
+              <div className="flex items-start justify-between gap-3">
+                {/* Content */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="font-medium text-sm">
+                      {notification.title}
+                    </h3>
+                    {getTypeBadge(notification.type)}
+                    {!notification.is_read && (
+                      <span className="inline-block h-2 w-2 rounded-full bg-primary ml-auto" />
+                    )}
+                  </div>
+
+                  <p className="text-sm text-muted-foreground mb-2">
+                    {notification.message}
+                  </p>
+
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(notification.created_at).toLocaleString("id-ID")}
+                  </p>
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-1 shrink-0">
+                  {!notification.is_read && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleMarkAsRead(notification.id)}
+                      disabled={marking === notification.id}
+                      title="Tandai sudah dibaca"
+                    >
+                      {marking === notification.id ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Eye className="size-3.5" />
+                      )}
+                    </Button>
+                  )}
+
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:bg-destructive/10"
+                    onClick={() => handleDelete(notification.id)}
+                    disabled={deleting === notification.id}
+                    title="Hapus pesan"
+                  >
+                    {deleting === notification.id ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-3.5" />
+                    )}
+                  </Button>
+                </div>
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold text-foreground">{n.title}</p>
-                <p className="text-sm text-muted-foreground">{n.message}</p>
-                {/* Format tanggal manual, bukan toLocaleString */}
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {formatDate(n.created_at)}
-                </p>
-              </div>
-              {!n.is_read && (
-                <span className="mt-1.5 size-2 shrink-0 rounded-full bg-accent" />
+
+              {/* ✅ Link action - pakai navigate() bukan <a href> */}
+              {notification.link && (
+                <div className="mt-3">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleNavigateToLink(notification.link!)}
+                  >
+                    Lihat Detail
+                  </Button>
+                </div>
               )}
-            </li>
+            </div>
           ))}
-        </ul>
+        </div>
+      )}
+
+      {notifications.length > 0 && (
+        <div className="mt-6 text-xs text-muted-foreground text-center">
+          ⏱️ Pesan diperbarui otomatis setiap 5 detik
+        </div>
       )}
     </>
   );

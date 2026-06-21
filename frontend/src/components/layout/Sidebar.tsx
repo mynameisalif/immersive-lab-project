@@ -17,7 +17,18 @@ import { useAuth } from "../../lib/auth";
 
 type Item = { to: string; label: string; icon: typeof LayoutDashboard };
 
+// ── Nav per role ───────────────────────────────────────────────
+
 const studentNav: Item[] = [
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
+  { to: "/status-approval", label: "Status Approval", icon: ListChecks },
+  // { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
+  { to: "/pesan", label: "Pesan", icon: MessageSquare },
+];
+
+// Staff: sama seperti student (requester only, tanpa approval)
+const staffNav: Item[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
   { to: "/status-approval", label: "Status Approval", icon: ListChecks },
@@ -25,9 +36,20 @@ const studentNav: Item[] = [
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
 ];
 
+// Dosen Kaprodi: bisa approve request mahasiswa
+const kaprodiNav: Item[] = [
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/approval", label: "Approval Mahasiswa", icon: CheckSquare },
+  { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
+  { to: "/status-approval", label: "Status Approval", icon: ListChecks },
+  // { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
+  { to: "/laporan", label: "Laporan Peminjaman", icon: BarChart3 },
+  { to: "/pesan", label: "Pesan", icon: MessageSquare },
+];
+
+// Dosen biasa: requester only (tidak ada approval)
 const dosenNav: Item[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/approval", label: "Approval Peminjaman", icon: CheckSquare },
   { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
   { to: "/status-approval", label: "Status Approval", icon: ListChecks },
   { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
@@ -35,6 +57,7 @@ const dosenNav: Item[] = [
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
 ];
 
+// Admin: full access
 const adminNav: Item[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/aset", label: "Manajemen Aset", icon: Boxes },
@@ -47,11 +70,30 @@ const adminNav: Item[] = [
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
 ];
 
+// ── Helper: pilih nav berdasarkan role & isKaprodi ─────────────
+function getNav(role: string | null, isKaprodi: boolean): Item[] {
+  if (role === "admin") return adminNav;
+  if (role === "dosen") return isKaprodi ? kaprodiNav : dosenNav;
+  if (role === "staff") return staffNav;
+  return studentNav;
+}
+
+// ── Helper: label role untuk display ──────────────────────────
+function getRoleLabel(role: string | null, isKaprodi: boolean): string {
+  if (role === "admin") return "Admin";
+  if (role === "dosen") return isKaprodi ? "Dosen Kepala Prodi" : "Dosen";
+  if (role === "staff") return "Staff";
+  if (role === "student") return "Mahasiswa";
+  return "—";
+}
+
+// ── SidebarNav Component ───────────────────────────────────────
 export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
-  const { role } = useAuth();
-  const nav =
-    role === "admin" ? adminNav : role === "dosen" ? dosenNav : studentNav;
+  const { role, isKaprodi } = useAuth(); // ✅ dipanggil di dalam component
+
+  const nav = getNav(role, isKaprodi);
+  const roleLabel = getRoleLabel(role, isKaprodi);
 
   return (
     <div className="flex h-full flex-col">
@@ -88,7 +130,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       <div className="border-t border-sidebar-border p-4">
         <div className="rounded-lg bg-sidebar-accent/40 p-3">
           <p className="text-xs font-semibold capitalize text-sidebar-foreground">
-            Role: {role ?? "—"}
+            Role: {roleLabel}
           </p>
           <p className="mt-1 text-[11px] leading-relaxed text-sidebar-foreground/70">
             Hubungi admin lab untuk pertanyaan peminjaman.
@@ -99,6 +141,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+// ── Sidebar Wrapper ────────────────────────────────────────────
 export function Sidebar() {
   return (
     <aside className="hidden lg:flex lg:w-248px lg:shrink-0 lg:flex-col lg:border-r lg:bg-sidebar lg:text-sidebar-foreground">

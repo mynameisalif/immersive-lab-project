@@ -1,11 +1,12 @@
 import { Bell, Search, Menu, LogOut, MessageSquare } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { BrandLogo } from "../common/BrandLogo";
 import { useAuth } from "../../lib/auth";
 import { useNavigate } from "@tanstack/react-router";
-import { getNotifications, markNotifRead } from "../../services/user.service";
+import api from "../../lib/api"; // ✅ Pakai api langsung, konsisten
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,6 +22,7 @@ interface Notif {
   id: string;
   title: string;
   message: string;
+  link?: string;
   is_read: boolean;
   created_at: string;
 }
@@ -29,38 +31,77 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
   const { profile, role, signOut } = useAuth();
   const navigate = useNavigate();
   const [notifs, setNotifs] = useState<Notif[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [open, setOpen] = useState(false);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // ✅ Load notifications - pakai /api/notifications langsung
   const loadNotifs = async () => {
     try {
-      const res = await getNotifications();
-      // res.data = { data: [...] } dari backend kita
-      // bukan array langsung
-      setNotifs(Array.isArray(res.data?.data) ? res.data.data : []);
-    } catch {
+      const res = await api.get("/api/notifications");
+      // ✅ FIX: res.data.data adalah array notifications
+      const data = res.data?.data;
+      setNotifs(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("loadNotifs error:", err);
       setNotifs([]);
-      console.error("getNotifications error");
     }
   };
 
+  // ✅ Load unread count
+  const loadUnreadCount = async () => {
+    try {
+      const res = await api.get("/api/notifications/count/unread");
+      setUnreadCount(res.data?.data?.unread_count ?? 0);
+    } catch (err) {
+      console.error("loadUnreadCount error:", err);
+    }
+  };
+
+  // ✅ Mark as read - pakai /api/notifications/:id/read langsung
+  const handleMarkAsRead = async (id: string) => {
+    try {
+      await api.patch(`/api/notifications/${id}/read`);
+      setNotifs((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+      );
+      setUnreadCount((prev) => Math.max(0, prev - 1));
+    } catch (err) {
+      console.error("markAsRead error:", err);
+    }
+  };
+
+  // ✅ On mount: load unread count
+  useEffect(() => {
+    void loadUnreadCount();
+  }, []);
+
+  // ✅ Load notifications when profile ready
   useEffect(() => {
     if (profile) void loadNotifs();
   }, [profile]);
 
-  const unreadCount = notifs.filter((n) => !n.is_read).length;
+  // ✅ Auto-refresh polling setiap 5 detik
+  useEffect(() => {
+    if (!profile) return;
 
+    intervalRef.current = setInterval(() => {
+      void loadNotifs();
+      void loadUnreadCount();
+    }, 5000);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [profile]);
+
+  // ✅ Click notif: mark as read + navigate to pesan
   const openMessage = async (id: string) => {
-    try {
-      await markNotifRead(id);
-      setNotifs((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
-      );
-    } catch {}
+    await handleMarkAsRead(id);
     setOpen(false);
     navigate({ to: "/pesan" });
   };
 
-  // Format tanggal dengan cara yang konsisten (fix hydration)
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
     const pad = (n: number) => String(n).padStart(2, "0");
@@ -103,9 +144,12 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
         {/* ── Notifikasi ── */}
         <Popover
           open={open}
-          onOpenChange={(o) => {
+          onOpenChange={async (o) => {
             setOpen(o);
-            if (o) void loadNotifs();
+            if (o) {
+              await loadNotifs();
+              await loadUnreadCount();
+            }
           }}
         >
           <PopoverTrigger asChild>
@@ -116,16 +160,22 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
               className="relative"
             >
               <Bell className="size-5" />
+              {/* ✅ Badge hanya muncul jika ada unread */}
               {unreadCount > 0 && (
-                <span className="absolute right-1.5 top-1.5 flex size-4 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-destructive-foreground">
-                  {unreadCount > 9 ? "9+" : unreadCount}
-                </span>
+                <Badge className="absolute -right-2 -top-2 h-5 w-5 flex items-center justify-center rounded-full p-0 text-xs">
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </Badge>
               )}
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="end" className="w-360px p-0">
+          <PopoverContent align="end" className="w-80 p-0">
             <div className="flex items-center justify-between border-b px-4 py-3">
               <p className="font-display font-semibold">Notifikasi</p>
+              {unreadCount > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {unreadCount} belum dibaca
+                </span>
+              )}
               <button
                 className="text-xs font-semibold text-accent hover:underline"
                 onClick={() => {
@@ -136,7 +186,7 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
                 Lihat semua
               </button>
             </div>
-            <div className="max-h-380px overflow-y-auto">
+            <div className="max-h-96 overflow-y-auto">
               {notifs.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
                   <MessageSquare className="size-8 text-muted-foreground/60" />
@@ -146,7 +196,7 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
                 </div>
               ) : (
                 <ul className="divide-y">
-                  {notifs.map((n) => (
+                  {notifs.slice(0, 10).map((n) => (
                     <li key={n.id}>
                       <button
                         onClick={() => openMessage(n.id)}
@@ -165,7 +215,6 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
                           <p className="text-xs text-muted-foreground">
                             {truncate(n.message)}
                           </p>
-                          {/* Fix hydration: gunakan format manual, bukan toLocaleString */}
                           <p className="mt-0.5 text-[10px] text-muted-foreground">
                             {formatDate(n.created_at)}
                           </p>

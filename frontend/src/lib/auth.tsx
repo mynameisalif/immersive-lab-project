@@ -1,6 +1,5 @@
 // ============================================================
-// lib/auth.ts — REPLACED: Supabase → Node.js Backend
-// Interface tetap sama agar semua komponen Lovable tidak perlu diubah
+// lib/auth.ts — FIXED: tambah role & is_kaprodi ke profileData
 // ============================================================
 
 import {
@@ -12,14 +11,16 @@ import {
 } from "react";
 import api from "./api";
 
-// ── Types (sama seperti sebelumnya) ──────────────────────────
-export type AppRole = "student" | "dosen" | "admin";
+// ── Types ─────────────────────────────────────────────────────
+export type AppRole = "student" | "dosen" | "admin" | "staff";
 
 export interface Profile {
   id: string;
   email: string;
   full_name: string;
-  nim_nip: string | null;
+  role: "admin" | "dosen" | "student" | "staff";
+  is_kaprodi: boolean;
+  nim_nip?: string | null;
   phone: string | null;
   is_blocked: boolean;
   blocked_reason: string | null;
@@ -30,6 +31,7 @@ interface AuthState {
   user: { id: string; email: string } | null;
   profile: Profile | null;
   role: AppRole | null;
+  isKaprodi: boolean; // ← tambah helper langsung
   loading: boolean;
   signIn: (
     email: string,
@@ -45,7 +47,7 @@ interface AuthState {
   refresh: () => Promise<void>;
 }
 
-// ── Helper localStorage yang aman (fix hydration error) ──────
+// ── Helper localStorage ───────────────────────────────────────
 const ls = {
   get: (key: string) => {
     if (typeof window === "undefined") return null;
@@ -86,19 +88,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = res.data.data;
+
+      // ✅ FIX: include role & is_kaprodi
       const profileData: Profile = {
         id: data.id,
         email: data.email,
         full_name: data.full_name,
+        role: data.role,
+        is_kaprodi: data.is_kaprodi ?? false,
         nim_nip: data.nim_nip ?? null,
         phone: data.phone ?? null,
         is_blocked: data.is_blocked ?? false,
         blocked_reason: data.blocked_reason ?? null,
       };
+
       setProfile(profileData);
       setRole((data.role as AppRole) ?? null);
 
-      // Simpan ke localStorage agar tidak re-fetch saat refresh
       ls.set("profile", JSON.stringify(profileData));
       ls.set("role", data.role ?? "");
     } catch {
@@ -107,7 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // ── Init: baca dari localStorage saat mount ───────────────
+  // ── Init ──────────────────────────────────────────────────
   useEffect(() => {
     setMounted(true);
 
@@ -118,18 +124,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (token && savedUser) {
       try {
-        const user = JSON.parse(savedUser);
         setSession({ access_token: token });
 
-        // Jika profile sudah tersimpan, pakai dulu
         if (savedProfile) {
           setProfile(JSON.parse(savedProfile));
           setRole((savedRole as AppRole) ?? null);
           setLoading(false);
-          // Refresh di background untuk data terbaru
-          void loadProfile(token);
+          void loadProfile(token); // refresh background
         } else {
-          // Belum ada profile, fetch dari backend
           void loadProfile(token).finally(() => setLoading(false));
         }
       } catch {
@@ -148,10 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       ls.set("token", token);
       ls.set("user", JSON.stringify(userData));
-
       setSession({ access_token: token });
-
-      // Muat profile lengkap
       await loadProfile(token);
 
       return { error: null };
@@ -169,7 +168,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     full_name,
     nim_nip,
   ) => {
-    // Validasi format email
     const validEmail =
       email.endsWith("@student.mnp.ac.id") ||
       email.endsWith("@mnp.ac.id") ||
@@ -178,7 +176,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!validEmail)
       return { error: "Email harus @student.mnp.ac.id atau @mnp.ac.id" };
 
-    // Tentukan role dari format email
     let role: AppRole = "student";
     if (email.endsWith("@mnp.ac.id") && !email.startsWith("admin"))
       role = "dosen";
@@ -194,9 +191,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       return { error: null };
     } catch (err: any) {
-      return {
-        error: err.response?.data?.message ?? "Registrasi gagal",
-      };
+      return { error: err.response?.data?.message ?? "Registrasi gagal" };
     }
   };
 
@@ -217,8 +212,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (token) await loadProfile(token);
   };
 
-  // Fix hydration: jangan render apapun sebelum mount di client
   if (!mounted) return null;
+
+  // ✅ isKaprodi helper — dosen dengan is_kaprodi = true
+  const isKaprodi = profile?.role === "dosen" && (profile?.is_kaprodi ?? false);
 
   return (
     <Ctx.Provider
@@ -227,6 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user: profile ? { id: profile.id, email: profile.email } : null,
         profile,
         role,
+        isKaprodi,
         loading,
         signIn,
         signUp,

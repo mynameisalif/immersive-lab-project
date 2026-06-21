@@ -25,7 +25,7 @@ module.exports = async (req, res, next) => {
           : `Akun diblokir: ${rows[0].blocked_reason}`,
       });
 
-    req.user = decoded;
+    req.user = { ...decoded, id: decoded.userId };
     next();
   } catch (err) {
     return res

@@ -27,7 +27,8 @@ export const Route = createFileRoute("/_app/pinjaman")({
 interface Loan {
   id: string;
   notes: string;
-  status: LoanStatus;
+  status: string; // ← string (raw dari backend)
+  statusMapped: LoanStatus; // ← LoanStatus (setelah di-map)
   borrow_date: string;
   return_deadline: string;
   category: string;
@@ -40,15 +41,29 @@ interface Loan {
   quantity: number;
 }
 
+// Map status backend → LoanStatus untuk StatusBadge
+const mapStatus = (s: string): LoanStatus => {
+  const map: Record<string, LoanStatus> = {
+    pending: "pending_dosen",
+    approved_dosen: "pending_admin",
+    approved_admin: "approved",
+    picked_up: "picked_up",
+    returned: "returned",
+    rejected: "rejected",
+    overdue: "overdue",
+  };
+  return (map[s] ?? "pending_dosen") as LoanStatus;
+};
+
+// Filter berdasarkan status raw dari backend
 const isMenunggu = (s: string) => s === "pending" || s === "approved_dosen";
 const isAktif = (s: string) => s === "approved_admin" || s === "picked_up";
 const isSelesai = (s: string) =>
   s === "returned" || s === "rejected" || s === "overdue";
 
 function Pinjaman() {
-  // ✅ SEMUA HOOKS DI ATAS - sebelum return apapun
   const matches = useMatches();
-  const { user, role } = useAuth();
+  const { user, role, isKaprodi } = useAuth();
   const [rows, setRows] = useState<Loan[]>([]);
   const [tab, setTab] = useState("all");
   const [loading, setLoading] = useState(false);
@@ -63,7 +78,8 @@ function Pinjaman() {
       const data: Loan[] = (res.data?.data ?? []).map((r: any) => ({
         id: r.id,
         notes: r.notes ?? "",
-        status: r.status,
+        status: r.status, // raw string
+        statusMapped: mapStatus(r.status), // ✅ mapped untuk badge
         borrow_date: r.borrow_date,
         return_deadline: r.return_deadline,
         category: r.category,
@@ -87,7 +103,6 @@ function Pinjaman() {
     void load();
   }, [user, role]);
 
-  // ✅ Early return SETELAH semua hooks
   if (isChildRoute) return <Outlet />;
 
   const filtered = rows.filter((r) => {
@@ -114,6 +129,9 @@ function Pinjaman() {
       : role === "dosen"
         ? "Peminjaman dari mahasiswa yang memilih Anda sebagai dosen pembimbing."
         : "Ajukan & lihat riwayat peminjaman Anda.";
+
+  // ✅ FIXED: Allow all non-admin roles (student, staff, dosen, kaprodi) to create requests
+  const isRequester = role !== "admin";
 
   const getMerkLabel = (row: Loan) => {
     const parts = [row.merk, row.type].filter(Boolean).join(" ");
@@ -149,8 +167,8 @@ function Pinjaman() {
         }
       />
 
-      {/* Form hanya untuk mahasiswa & dosen */}
-      {(role === "student" || role === "dosen") && (
+      {/* Form request — untuk student, staff, dosen, dan kaprodi */}
+      {isRequester && (
         <section className="mt-6 rounded-xl border bg-card p-5 shadow-(--shadow-card)">
           <h2 className="font-display text-base font-semibold">
             Pengajuan Peminjaman
@@ -164,7 +182,7 @@ function Pinjaman() {
         </section>
       )}
 
-      {/* Tabel daftar peminjaman */}
+      {/* Tabel */}
       <section className="mt-8">
         <h2 className="mb-3 font-display text-base font-semibold">{heading}</h2>
         <Tabs value={tab} onValueChange={setTab}>
@@ -230,7 +248,8 @@ function Pinjaman() {
                           {formatDate(r.return_deadline)}
                         </td>
                         <td className="px-4 py-3">
-                          <StatusBadge status={r.status as LoanStatus} />
+                          {/* ✅ Pakai statusMapped bukan status langsung */}
+                          <StatusBadge status={r.statusMapped} />
                         </td>
                       </tr>
                     ))
