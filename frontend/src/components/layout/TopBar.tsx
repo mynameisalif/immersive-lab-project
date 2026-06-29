@@ -6,7 +6,7 @@ import { Input } from "../ui/input";
 import { BrandLogo } from "../common/BrandLogo";
 import { useAuth } from "../../lib/auth";
 import { useNavigate } from "@tanstack/react-router";
-import api from "../../lib/api"; // ✅ Pakai api langsung, konsisten
+import api from "../../lib/api";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,9 +22,54 @@ interface Notif {
   id: string;
   title: string;
   message: string;
+  type: string;
   link?: string;
   is_read: boolean;
   created_at: string;
+}
+
+// ── Group notifikasi yang dikirim bersamaan ───────────────────
+interface NotifGroup {
+  groupKey: string;
+  title: string;
+  type: string;
+  is_read: boolean;
+  created_at: string;
+  items: Notif[];
+}
+
+const GROUP_WINDOW_MS = 10_000; // FIX: 10 detik
+
+function groupNotifs(items: Notif[]): NotifGroup[] {
+  const sorted = [...items].sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  const groups: NotifGroup[] = [];
+  for (const item of sorted) {
+    const existing = groups.find(
+      (g) =>
+        g.type === item.type &&
+        Math.abs(
+          new Date(g.created_at).getTime() -
+            new Date(item.created_at).getTime(),
+        ) <= GROUP_WINDOW_MS,
+    );
+    if (existing) {
+      existing.items.push(item);
+      if (!item.is_read) existing.is_read = false;
+    } else {
+      groups.push({
+        groupKey: item.id,
+        title: item.title,
+        type: item.type,
+        is_read: item.is_read,
+        created_at: item.created_at,
+        items: [item],
+      });
+    }
+  }
+  return groups;
 }
 
 export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
@@ -35,78 +80,67 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
   const [open, setOpen] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // ✅ Load notifications - pakai /api/notifications langsung
   const loadNotifs = async () => {
     try {
       const res = await api.get("/api/notifications");
-      // ✅ FIX: res.data.data adalah array notifications
       const data = res.data?.data;
       setNotifs(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("loadNotifs error:", err);
+    } catch {
       setNotifs([]);
     }
   };
 
-  // ✅ Load unread count
   const loadUnreadCount = async () => {
     try {
       const res = await api.get("/api/notifications/count/unread");
       setUnreadCount(res.data?.data?.unread_count ?? 0);
-    } catch (err) {
-      console.error("loadUnreadCount error:", err);
-    }
+    } catch {}
   };
 
-  // ✅ Mark as read - pakai /api/notifications/:id/read langsung
-  const handleMarkAsRead = async (id: string) => {
+  const handleMarkGroupAsRead = async (group: NotifGroup) => {
     try {
-      await api.patch(`/api/notifications/${id}/read`);
+      for (const n of group.items) {
+        if (!n.is_read) await api.patch(`/api/notifications/${n.id}/read`);
+      }
       setNotifs((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+        prev.map((n) =>
+          group.items.find((i) => i.id === n.id) ? { ...n, is_read: true } : n,
+        ),
       );
-      setUnreadCount((prev) => Math.max(0, prev - 1));
-    } catch (err) {
-      console.error("markAsRead error:", err);
-    }
+      setUnreadCount((prev) =>
+        Math.max(0, prev - group.items.filter((i) => !i.is_read).length),
+      );
+    } catch {}
+    setOpen(false);
+    navigate({ to: "/pesan" });
   };
 
-  // ✅ On mount: load unread count
   useEffect(() => {
     void loadUnreadCount();
   }, []);
-
-  // ✅ Load notifications when profile ready
   useEffect(() => {
     if (profile) void loadNotifs();
   }, [profile]);
 
-  // ✅ Auto-refresh polling setiap 5 detik
   useEffect(() => {
     if (!profile) return;
-
     intervalRef.current = setInterval(() => {
       void loadNotifs();
       void loadUnreadCount();
     }, 5000);
-
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [profile]);
-
-  // ✅ Click notif: mark as read + navigate to pesan
-  const openMessage = async (id: string) => {
-    await handleMarkAsRead(id);
-    setOpen(false);
-    navigate({ to: "/pesan" });
-  };
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
     const pad = (n: number) => String(n).padStart(2, "0");
     return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
+
+  const truncate = (s: string, n = 70) =>
+    s.length > n ? s.slice(0, n) + "…" : s;
 
   const initials = (profile?.full_name || profile?.email || "U")
     .split(" ")
@@ -115,8 +149,8 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
     .join("")
     .toUpperCase();
 
-  const truncate = (s: string, n = 80) =>
-    s.length > n ? s.slice(0, n) + "…" : s;
+  // ✅ Group notifikasi untuk popover
+  const groups = groupNotifs(notifs).slice(0, 8); // max 8 groups di popover
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-card/80 px-4 backdrop-blur-md sm:px-6">
@@ -160,7 +194,6 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
               className="relative"
             >
               <Bell className="size-5" />
-              {/* ✅ Badge hanya muncul jika ada unread */}
               {unreadCount > 0 && (
                 <Badge className="absolute -right-2 -top-2 h-5 w-5 flex items-center justify-center rounded-full p-0 text-xs">
                   {unreadCount > 99 ? "99+" : unreadCount}
@@ -187,7 +220,7 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
               </button>
             </div>
             <div className="max-h-96 overflow-y-auto">
-              {notifs.length === 0 ? (
+              {groups.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
                   <MessageSquare className="size-8 text-muted-foreground/60" />
                   <p className="text-sm text-muted-foreground">
@@ -196,35 +229,50 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
                 </div>
               ) : (
                 <ul className="divide-y">
-                  {notifs.slice(0, 10).map((n) => (
-                    <li key={n.id}>
-                      <button
-                        onClick={() => openMessage(n.id)}
-                        className={cn(
-                          "flex w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40",
-                          !n.is_read && "bg-accent/5",
-                        )}
-                      >
-                        <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                          <MessageSquare className="size-4" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold text-foreground">
-                            {n.title}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {truncate(n.message)}
-                          </p>
-                          <p className="mt-0.5 text-[10px] text-muted-foreground">
-                            {formatDate(n.created_at)}
-                          </p>
-                        </div>
-                        {!n.is_read && (
-                          <span className="mt-2 size-2 shrink-0 rounded-full bg-accent" />
-                        )}
-                      </button>
-                    </li>
-                  ))}
+                  {groups.map((group) => {
+                    const isMulti = group.items.length > 1;
+                    return (
+                      <li key={group.groupKey}>
+                        <button
+                          onClick={() => handleMarkGroupAsRead(group)}
+                          className={cn(
+                            "flex w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40",
+                            !group.is_read && "bg-accent/5",
+                          )}
+                        >
+                          <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                            <MessageSquare className="size-4" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            {/* Title + badge jumlah */}
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <p className="truncate text-sm font-semibold text-foreground">
+                                {group.title}
+                              </p>
+                              {/* ✅ Badge jumlah aset jika grouped */}
+                              {isMulti && (
+                                <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                  {group.items.length}×
+                                </span>
+                              )}
+                            </div>
+                            {/* Preview message */}
+                            <p className="text-xs text-muted-foreground">
+                              {isMulti
+                                ? `${group.items.length} aset — ${truncate(group.items[0].message, 50)}`
+                                : truncate(group.items[0].message)}
+                            </p>
+                            <p className="mt-0.5 text-[10px] text-muted-foreground">
+                              {formatDate(group.created_at)}
+                            </p>
+                          </div>
+                          {!group.is_read && (
+                            <span className="mt-2 size-2 shrink-0 rounded-full bg-accent" />
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>

@@ -5,7 +5,14 @@ import { Button } from "../components/ui/button";
 import { StatusBadge, type LoanStatus } from "../components/common/StatusBadge";
 import { useAuth } from "../lib/auth";
 import { EmptyState } from "../components/common/EmptyState";
-import { CheckSquare, X, Loader2, FileText, ExternalLink } from "lucide-react";
+import {
+  CheckSquare,
+  X,
+  Loader2,
+  FileText,
+  ExternalLink,
+  Package,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -30,12 +37,14 @@ export const Route = createFileRoute("/_app/approval")({
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
+// ── Types ─────────────────────────────────────────────────────
 interface Item {
   id: string;
   notes: string;
   status: LoanStatus;
   borrow_date: string;
   return_deadline: string;
+  created_at: string; // ✅ tambah untuk grouping
   requester_id: string;
   requester_role?: string;
   asset_name?: string;
@@ -49,6 +58,25 @@ interface Item {
   attachment_name?: string | null;
 }
 
+// ✅ Group dari beberapa loan yang disubmit bersama
+interface LoanGroup {
+  groupKey: string; // ID unik group (pakai ID item pertama)
+  requester_id: string;
+  requester_name: string;
+  nim_nip: string | null;
+  requester_role: string;
+  borrow_date: string;
+  return_deadline: string;
+  category: string;
+  notes: string;
+  status: LoanStatus;
+  created_at: string;
+  attachment_url: string | null;
+  attachment_name: string | null;
+  items: Item[]; // semua loan dalam group ini
+}
+
+// ── Helpers ───────────────────────────────────────────────────
 const mapStatus = (s: string): LoanStatus => {
   const map: Record<string, LoanStatus> = {
     pending: "pending_dosen",
@@ -76,13 +104,74 @@ const formatCategory = (cat?: string) => {
   return cat;
 };
 
+const getMerkLabel = (r: Item) => {
+  const parts = [r.merk, r.type].filter(Boolean).join(" ");
+  return parts || r.asset_name || "—";
+};
+
+// ✅ Fungsi grouping: gabung loan yang disubmit bersama
+// Kriteria: requester + borrow_date + return_deadline + category
+//           + created_at dalam rentang 60 detik
+// ✅ FIX: 10 detik (bukan 60 detik)
+// Loan dalam 1 batch disubmit dalam ~1-2 detik (JavaScript loop).
+// Dua submission manual terpisah butuh waktu > 10 detik.
+const GROUP_WINDOW_MS = 10_000;
+
+function groupLoans(items: Item[]): LoanGroup[] {
+  const sorted = [...items].sort(
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+  );
+
+  const groups: LoanGroup[] = [];
+
+  for (const item of sorted) {
+    // ✅ FIX: tambah pengecekan notes — batch yang sama punya notes yang sama
+    const existing = groups.find(
+      (g) =>
+        g.requester_id === item.requester_id &&
+        g.borrow_date === item.borrow_date &&
+        g.return_deadline === item.return_deadline &&
+        g.category === item.category &&
+        g.notes === item.notes &&
+        Math.abs(
+          new Date(g.created_at).getTime() -
+            new Date(item.created_at).getTime(),
+        ) <= GROUP_WINDOW_MS,
+    );
+
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      // Buat group baru
+      groups.push({
+        groupKey: item.id,
+        requester_id: item.requester_id,
+        requester_name: item.requester_name ?? "—",
+        nim_nip: item.nim_nip ?? null,
+        requester_role: item.requester_role ?? "",
+        borrow_date: item.borrow_date,
+        return_deadline: item.return_deadline,
+        category: item.category ?? "",
+        notes: item.notes,
+        status: item.status,
+        created_at: item.created_at,
+        attachment_url: item.attachment_url ?? null,
+        attachment_name: item.attachment_name ?? null,
+        items: [item],
+      });
+    }
+  }
+
+  return groups;
+}
+
+// ── Main Component ────────────────────────────────────────────
 function ApprovalPage() {
-  // ✅ useAuth dipanggil di dalam component
   const { role, isKaprodi } = useAuth();
   const [rows, setRows] = useState<Item[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Guard: hanya admin dan kaprodi yang bisa akses
   const canAccess = role === "admin" || (role === "dosen" && isKaprodi);
 
   const getPageTitle = () => {
@@ -110,6 +199,7 @@ function ApprovalPage() {
         status: mapStatus(r.status),
         borrow_date: r.borrow_date,
         return_deadline: r.return_deadline,
+        created_at: r.created_at, // ✅ ambil dari API
         requester_id: r.requester_id,
         requester_role: r.requester_role ?? "",
         asset_name: r.asset_name ?? "—",
@@ -132,39 +222,53 @@ function ApprovalPage() {
     void load();
   }, [role, isKaprodi]);
 
-  const decide = async (
-    loanId: string,
-    decision: "approved" | "rejected",
-    reason?: string,
-  ) => {
+  // ✅ Approve SEMUA loan dalam satu group
+  const approveGroup = async (group: LoanGroup) => {
     setLoading(true);
-    try {
-      if (decision === "approved") {
-        await approveLoan(loanId, reason ?? "");
-        toast.success(
-          isKaprodi
-            ? "Disetujui! Menunggu konfirmasi Admin."
-            : "Peminjaman berhasil disetujui",
+    let successCount = 0;
+    for (const item of group.items) {
+      try {
+        await approveLoan(item.id, "");
+        successCount++;
+      } catch (err: any) {
+        toast.error(
+          `Gagal setujui ${getMerkLabel(item)}: ${err.response?.data?.message ?? "Error"}`,
         );
-      } else {
-        if (!reason) return toast.error("Alasan penolakan wajib diisi");
-        await rejectLoan(loanId, reason);
-        toast.success("Peminjaman ditolak");
       }
+    }
+    setLoading(false);
+    if (successCount > 0) {
+      toast.success(
+        group.items.length > 1
+          ? `${successCount} aset disetujui! ${isKaprodi ? "Menunggu konfirmasi Admin." : ""}`
+          : `Peminjaman disetujui! ${isKaprodi ? "Menunggu konfirmasi Admin." : ""}`,
+      );
       void load();
-    } catch (err: any) {
-      toast.error(err.response?.data?.message ?? "Terjadi kesalahan");
-    } finally {
-      setLoading(false);
     }
   };
 
-  const getMerkLabel = (r: Item) => {
-    const parts = [r.merk, r.type].filter(Boolean).join(" ");
-    return parts || r.asset_name || "—";
+  // ✅ Reject SEMUA loan dalam satu group dengan alasan yang sama
+  const rejectGroup = async (group: LoanGroup, reason: string) => {
+    if (!reason) return toast.error("Alasan penolakan wajib diisi");
+    setLoading(true);
+    let successCount = 0;
+    for (const item of group.items) {
+      try {
+        await rejectLoan(item.id, reason);
+        successCount++;
+      } catch (err: any) {
+        toast.error(
+          `Gagal tolak ${getMerkLabel(item)}: ${err.response?.data?.message ?? "Error"}`,
+        );
+      }
+    }
+    setLoading(false);
+    if (successCount > 0) {
+      toast.success("Pengajuan ditolak");
+      void load();
+    }
   };
 
-  // Guard: jika bukan admin/kaprodi
   if (!canAccess) {
     return (
       <div className="rounded-xl border bg-card p-8 text-center text-muted-foreground">
@@ -173,11 +277,14 @@ function ApprovalPage() {
     );
   }
 
+  // ✅ Group loans sebelum render
+  const groups = groupLoans(rows);
+
   return (
     <>
       <PageHeader title={getPageTitle()} description={getPageDesc()} />
 
-      {rows.length === 0 ? (
+      {groups.length === 0 ? (
         <div className="mt-8">
           <EmptyState
             icon={CheckSquare}
@@ -187,111 +294,15 @@ function ApprovalPage() {
         </div>
       ) : (
         <div className="mt-6 space-y-3">
-          {rows.map((r) => (
-            <div
-              key={r.id}
-              className="rounded-xl border bg-card p-5 shadow-(--shadow-card)"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  {/* ID & Status */}
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {r.id.slice(0, 8)}
-                    </span>
-                    <StatusBadge status={r.status} />
-                    {/* Badge role peminjam */}
-                    {r.requester_role && (
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground capitalize">
-                        {r.requester_role === "student"
-                          ? "Mahasiswa"
-                          : r.requester_role === "dosen"
-                            ? "Dosen"
-                            : r.requester_role === "staff"
-                              ? "Staff"
-                              : r.requester_role}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Aset */}
-                  <h3 className="mt-1 font-display font-semibold">
-                    {getMerkLabel(r)}
-                    {r.quantity ? ` × ${r.quantity} unit` : ""}
-                  </h3>
-
-                  {/* Keterangan */}
-                  {r.notes && (
-                    <p className="text-sm text-muted-foreground">{r.notes}</p>
-                  )}
-
-                  {/* Peminjam */}
-                  <p className="text-sm text-muted-foreground">
-                    {r.requester_name}{" "}
-                    {r.nim_nip && (
-                      <span className="font-mono">· {r.nim_nip}</span>
-                    )}
-                  </p>
-
-                  {/* Kategori */}
-                  <div className="mt-1.5 flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      Kategori:
-                    </span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        r.category === "event_kegiatan"
-                          ? "bg-purple-100 text-purple-700"
-                          : "bg-blue-100 text-blue-700"
-                      }`}
-                    >
-                      {formatCategory(r.category)}
-                    </span>
-                  </div>
-
-                  {/* Proposal */}
-                  {r.category === "event_kegiatan" && r.attachment_url && (
-                    <a
-                      href={`${API_URL}${r.attachment_url}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/50 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors"
-                    >
-                      <FileText className="size-3.5 text-muted-foreground" />
-                      {r.attachment_name ?? "Lihat Proposal"}
-                      <ExternalLink className="size-3 text-muted-foreground" />
-                    </a>
-                  )}
-
-                  {/* Tanggal */}
-                  <p className="mt-1.5 text-xs text-muted-foreground">
-                    Pinjam {formatDate(r.borrow_date)} → Kembali{" "}
-                    {formatDate(r.return_deadline)}
-                  </p>
-                </div>
-
-                {/* Tombol aksi */}
-                <div className="flex gap-2 shrink-0">
-                  <RejectDialog
-                    loanId={r.id}
-                    onConfirm={(reason) => decide(r.id, "rejected", reason)}
-                    disabled={loading}
-                  />
-                  <Button
-                    variant="brand"
-                    onClick={() => decide(r.id, "approved")}
-                    disabled={loading}
-                  >
-                    {loading ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <CheckSquare className="size-4" />
-                    )}{" "}
-                    Setujui
-                  </Button>
-                </div>
-              </div>
-            </div>
+          {groups.map((group) => (
+            <GroupCard
+              key={group.groupKey}
+              group={group}
+              loading={loading}
+              isKaprodi={!!isKaprodi}
+              onApprove={() => approveGroup(group)}
+              onReject={(reason) => rejectGroup(group, reason)}
+            />
           ))}
         </div>
       )}
@@ -299,13 +310,146 @@ function ApprovalPage() {
   );
 }
 
+// ── GroupCard Component ───────────────────────────────────────
+function GroupCard({
+  group,
+  loading,
+  isKaprodi,
+  onApprove,
+  onReject,
+}: {
+  group: LoanGroup;
+  loading: boolean;
+  isKaprodi: boolean;
+  onApprove: () => void;
+  onReject: (reason: string) => void;
+}) {
+  const isMulti = group.items.length > 1;
+
+  return (
+    <div className="rounded-xl border bg-card p-5 shadow-(--shadow-card)">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          {/* ID & Status & Role badge */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs text-muted-foreground">
+              {group.groupKey.slice(0, 8)}
+            </span>
+            <StatusBadge status={group.status} />
+            {group.requester_role && (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground capitalize">
+                {group.requester_role === "student"
+                  ? "Mahasiswa"
+                  : group.requester_role === "dosen"
+                    ? "Dosen"
+                    : group.requester_role === "staff"
+                      ? "Staff"
+                      : group.requester_role}
+              </span>
+            )}
+          </div>
+
+          {/* ✅ Daftar aset — satu baris jika hanya 1, list jika lebih */}
+          {isMulti ? (
+            <div className="mt-2">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Package className="size-3.5 text-muted-foreground" />
+                <span className="text-xs font-medium text-muted-foreground">
+                  {group.items.length} aset dalam satu pengajuan:
+                </span>
+              </div>
+              <ul className="space-y-0.5 ml-5">
+                {group.items.map((item) => (
+                  <li
+                    key={item.id}
+                    className="font-display font-semibold text-sm"
+                  >
+                    • {getMerkLabel(item)}
+                    {item.quantity ? ` × ${item.quantity} unit` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <h3 className="mt-1 font-display font-semibold">
+              {getMerkLabel(group.items[0])}
+              {group.items[0].quantity
+                ? ` × ${group.items[0].quantity} unit`
+                : ""}
+            </h3>
+          )}
+
+          {/* Keterangan */}
+          {group.notes && (
+            <p className="mt-1 text-sm text-muted-foreground">{group.notes}</p>
+          )}
+
+          {/* Peminjam */}
+          <p className="mt-1 text-sm text-muted-foreground">
+            {group.requester_name}{" "}
+            {group.nim_nip && (
+              <span className="font-mono">· {group.nim_nip}</span>
+            )}
+          </p>
+
+          {/* Kategori */}
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Kategori:</span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                group.category === "event_kegiatan"
+                  ? "bg-purple-100 text-purple-700"
+                  : "bg-blue-100 text-blue-700"
+              }`}
+            >
+              {formatCategory(group.category)}
+            </span>
+          </div>
+
+          {/* Proposal */}
+          {group.category === "event_kegiatan" && group.attachment_url && (
+            <a
+              href={`${API_URL}${group.attachment_url}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/50 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              <FileText className="size-3.5 text-muted-foreground" />
+              {group.attachment_name ?? "Lihat Proposal"}
+              <ExternalLink className="size-3 text-muted-foreground" />
+            </a>
+          )}
+
+          {/* Tanggal */}
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Pinjam {formatDate(group.borrow_date)} → Kembali{" "}
+            {formatDate(group.return_deadline)}
+          </p>
+        </div>
+
+        {/* Tombol aksi */}
+        <div className="flex gap-2 shrink-0">
+          <RejectDialog onConfirm={onReject} disabled={loading} />
+          <Button variant="brand" onClick={onApprove} disabled={loading}>
+            {loading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <CheckSquare className="size-4" />
+            )}{" "}
+            {isMulti ? `Setujui Semua (${group.items.length})` : "Setujui"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── RejectDialog ──────────────────────────────────────────────
 function RejectDialog({
-  loanId,
   onConfirm,
   disabled,
 }: {
-  loanId: string;
-  onConfirm: (r: string) => void;
+  onConfirm: (reason: string) => void;
   disabled: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -322,7 +466,7 @@ function RejectDialog({
         <DialogHeader>
           <DialogTitle>Tolak Pengajuan</DialogTitle>
           <DialogDescription>
-            Sertakan alasan penolakan untuk transparansi kepada peminjam.
+            Alasan penolakan akan dikirim ke semua aset dalam pengajuan ini.
           </DialogDescription>
         </DialogHeader>
         <Textarea

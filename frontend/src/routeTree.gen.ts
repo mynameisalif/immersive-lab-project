@@ -18,6 +18,7 @@ import { Route as AppStatusApprovalRouteImport } from './routes/_app.status-appr
 import { Route as AppPinjamanRouteImport } from './routes/_app.pinjaman'
 import { Route as AppPesanRouteImport } from './routes/_app.pesan'
 import { Route as AppPengembalianRouteImport } from './routes/_app.pengembalian'
+import { Route as AppPengambilanRouteImport } from './routes/_app.pengambilan'
 import { Route as AppLaporanRouteImport } from './routes/_app.laporan'
 import { Route as AppKatalogRouteImport } from './routes/_app.katalog'
 import { Route as AppDashboardRouteImport } from './routes/_app.dashboard'
@@ -69,6 +70,11 @@ const AppPengembalianRoute = AppPengembalianRouteImport.update({
   path: '/pengembalian',
   getParentRoute: () => AppRoute,
 } as any)
+const AppPengambilanRoute = AppPengambilanRouteImport.update({
+  id: '/pengambilan',
+  path: '/pengambilan',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppLaporanRoute = AppLaporanRouteImport.update({
   id: '/laporan',
   path: '/laporan',
@@ -108,6 +114,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AppDashboardRoute
   '/katalog': typeof AppKatalogRoute
   '/laporan': typeof AppLaporanRoute
+  '/pengambilan': typeof AppPengambilanRoute
   '/pengembalian': typeof AppPengembalianRoute
   '/pesan': typeof AppPesanRoute
   '/pinjaman': typeof AppPinjamanRouteWithChildren
@@ -124,6 +131,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AppDashboardRoute
   '/katalog': typeof AppKatalogRoute
   '/laporan': typeof AppLaporanRoute
+  '/pengambilan': typeof AppPengambilanRoute
   '/pengembalian': typeof AppPengembalianRoute
   '/pesan': typeof AppPesanRoute
   '/pinjaman': typeof AppPinjamanRouteWithChildren
@@ -142,6 +150,7 @@ export interface FileRoutesById {
   '/_app/dashboard': typeof AppDashboardRoute
   '/_app/katalog': typeof AppKatalogRoute
   '/_app/laporan': typeof AppLaporanRoute
+  '/_app/pengambilan': typeof AppPengambilanRoute
   '/_app/pengembalian': typeof AppPengembalianRoute
   '/_app/pesan': typeof AppPesanRoute
   '/_app/pinjaman': typeof AppPinjamanRouteWithChildren
@@ -160,6 +169,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/katalog'
     | '/laporan'
+    | '/pengambilan'
     | '/pengembalian'
     | '/pesan'
     | '/pinjaman'
@@ -176,6 +186,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/katalog'
     | '/laporan'
+    | '/pengambilan'
     | '/pengembalian'
     | '/pesan'
     | '/pinjaman'
@@ -193,6 +204,7 @@ export interface FileRouteTypes {
     | '/_app/dashboard'
     | '/_app/katalog'
     | '/_app/laporan'
+    | '/_app/pengambilan'
     | '/_app/pengembalian'
     | '/_app/pesan'
     | '/_app/pinjaman'
@@ -273,6 +285,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPengembalianRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/pengambilan': {
+      id: '/_app/pengambilan'
+      path: '/pengambilan'
+      fullPath: '/pengambilan'
+      preLoaderRoute: typeof AppPengambilanRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/laporan': {
       id: '/_app/laporan'
       path: '/laporan'
@@ -336,6 +355,7 @@ interface AppRouteChildren {
   AppDashboardRoute: typeof AppDashboardRoute
   AppKatalogRoute: typeof AppKatalogRoute
   AppLaporanRoute: typeof AppLaporanRoute
+  AppPengambilanRoute: typeof AppPengambilanRoute
   AppPengembalianRoute: typeof AppPengembalianRoute
   AppPesanRoute: typeof AppPesanRoute
   AppPinjamanRoute: typeof AppPinjamanRouteWithChildren
@@ -350,6 +370,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppDashboardRoute: AppDashboardRoute,
   AppKatalogRoute: AppKatalogRoute,
   AppLaporanRoute: AppLaporanRoute,
+  AppPengambilanRoute: AppPengambilanRoute,
   AppPengembalianRoute: AppPengembalianRoute,
   AppPesanRoute: AppPesanRoute,
   AppPinjamanRoute: AppPinjamanRouteWithChildren,

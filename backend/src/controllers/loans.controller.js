@@ -5,7 +5,7 @@ const path = require("path");
 async function sendNotif(client, userId, type, title, message, link = null) {
   await client.query(
     `INSERT INTO notifications (user_id, type, title, message, link)
-     VALUES ($1, $2, $3, $4, $5)`,
+      VALUES ($1, $2, $3, $4, $5)`,
     [userId, type, title, message, link],
   );
 }
@@ -18,15 +18,15 @@ exports.getAllLoans = async (req, res) => {
 
     if (req.user.role === "student") {
       query = `
-        SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-               p.full_name AS requester_name, p.nim_nip,
-               ur.role AS requester_role
-        FROM loan_requests lr
-        JOIN assets a ON a.id = lr.asset_id
-        JOIN profiles p ON p.id = lr.requester_id
-        JOIN user_roles ur ON ur.user_id = p.id
-        WHERE lr.requester_id = $1
-        ORDER BY lr.created_at DESC`;
+          SELECT lr.*, a.name AS asset_name, a.merk, a.type,
+                p.full_name AS requester_name, p.nim_nip,
+                ur.role AS requester_role
+          FROM loan_requests lr
+          JOIN assets a ON a.id = lr.asset_id
+          JOIN profiles p ON p.id = lr.requester_id
+          JOIN user_roles ur ON ur.user_id = p.id
+          WHERE lr.requester_id = $1
+          ORDER BY lr.created_at DESC`;
       params = [req.user.userId];
     } else if (req.user.role === "dosen") {
       const profileRes = await pool.query(
@@ -38,54 +38,54 @@ exports.getAllLoans = async (req, res) => {
       if (isKaprodi) {
         // Kaprodi: lihat semua pengajuan student + milik sendiri
         query = `
-          SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-                 p.full_name AS requester_name, p.nim_nip,
-                 ur.role AS requester_role
-          FROM loan_requests lr
-          JOIN assets a ON a.id = lr.asset_id
-          JOIN profiles p ON p.id = lr.requester_id
-          JOIN user_roles ur ON ur.user_id = p.id
-          WHERE ur.role = 'student' OR lr.requester_id = $1
-          ORDER BY lr.created_at DESC`;
+            SELECT lr.*, a.name AS asset_name, a.merk, a.type,
+                  p.full_name AS requester_name, p.nim_nip,
+                  ur.role AS requester_role
+            FROM loan_requests lr
+            JOIN assets a ON a.id = lr.asset_id
+            JOIN profiles p ON p.id = lr.requester_id
+            JOIN user_roles ur ON ur.user_id = p.id
+            WHERE ur.role = 'student' OR lr.requester_id = $1
+            ORDER BY lr.created_at DESC`;
         params = [req.user.userId];
       } else {
         // Dosen biasa: hanya milik sendiri
         query = `
+            SELECT lr.*, a.name AS asset_name, a.merk, a.type,
+                  p.full_name AS requester_name, p.nim_nip,
+                  ur.role AS requester_role
+            FROM loan_requests lr
+            JOIN assets a ON a.id = lr.asset_id
+            JOIN profiles p ON p.id = lr.requester_id
+            JOIN user_roles ur ON ur.user_id = p.id
+            WHERE lr.requester_id = $1
+            ORDER BY lr.created_at DESC`;
+        params = [req.user.userId];
+      }
+    } else if (req.user.role === "staff") {
+      // Staff: hanya milik sendiri
+      query = `
           SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-                 p.full_name AS requester_name, p.nim_nip,
-                 ur.role AS requester_role
+                p.full_name AS requester_name, p.nim_nip,
+                ur.role AS requester_role
           FROM loan_requests lr
           JOIN assets a ON a.id = lr.asset_id
           JOIN profiles p ON p.id = lr.requester_id
           JOIN user_roles ur ON ur.user_id = p.id
           WHERE lr.requester_id = $1
           ORDER BY lr.created_at DESC`;
-        params = [req.user.userId];
-      }
-    } else if (req.user.role === "staff") {
-      // Staff: hanya milik sendiri
-      query = `
-        SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-               p.full_name AS requester_name, p.nim_nip,
-               ur.role AS requester_role
-        FROM loan_requests lr
-        JOIN assets a ON a.id = lr.asset_id
-        JOIN profiles p ON p.id = lr.requester_id
-        JOIN user_roles ur ON ur.user_id = p.id
-        WHERE lr.requester_id = $1
-        ORDER BY lr.created_at DESC`;
       params = [req.user.userId];
     } else {
       // Admin: lihat semua
       query = `
-        SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-               p.full_name AS requester_name, p.nim_nip,
-               ur.role AS requester_role
-        FROM loan_requests lr
-        JOIN assets a ON a.id = lr.asset_id
-        JOIN profiles p ON p.id = lr.requester_id
-        JOIN user_roles ur ON ur.user_id = p.id
-        ORDER BY lr.created_at DESC`;
+          SELECT lr.*, a.name AS asset_name, a.merk, a.type,
+                p.full_name AS requester_name, p.nim_nip,
+                ur.role AS requester_role
+          FROM loan_requests lr
+          JOIN assets a ON a.id = lr.asset_id
+          JOIN profiles p ON p.id = lr.requester_id
+          JOIN user_roles ur ON ur.user_id = p.id
+          ORDER BY lr.created_at DESC`;
     }
 
     const { rows } = await pool.query(query, params);
@@ -101,19 +101,19 @@ exports.getLoanById = async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-              p.full_name AS requester_name, p.nim_nip,
-              json_agg(json_build_object(
-                'unit_code', au.unit_code,
-                'condition', lua.return_condition,
-                'notes', lua.return_notes
-              )) FILTER (WHERE au.id IS NOT NULL) AS assigned_units
-       FROM loan_requests lr
-       JOIN assets a ON a.id = lr.asset_id
-       JOIN profiles p ON p.id = lr.requester_id
-       LEFT JOIN loan_unit_assignments lua ON lua.loan_request_id = lr.id
-       LEFT JOIN asset_units au ON au.id = lua.asset_unit_id
-       WHERE lr.id = $1
-       GROUP BY lr.id, a.name, a.merk, a.type, p.full_name, p.nim_nip`,
+                p.full_name AS requester_name, p.nim_nip,
+                json_agg(json_build_object(
+                  'unit_code', au.unit_code,
+                  'condition', lua.return_condition,
+                  'notes', lua.return_notes
+                )) FILTER (WHERE au.id IS NOT NULL) AS assigned_units
+        FROM loan_requests lr
+        JOIN assets a ON a.id = lr.asset_id
+        JOIN profiles p ON p.id = lr.requester_id
+        LEFT JOIN loan_unit_assignments lua ON lua.loan_request_id = lr.id
+        LEFT JOIN asset_units au ON au.id = lua.asset_unit_id
+        WHERE lr.id = $1
+        GROUP BY lr.id, a.name, a.merk, a.type, p.full_name, p.nim_nip`,
       [req.params.id],
     );
     if (!rows[0])
@@ -151,8 +151,8 @@ exports.createLoan = async (req, res) => {
 
     const stockRes = await client.query(
       `SELECT id FROM asset_units
-       WHERE asset_id = $1 AND condition = 'good' AND loan_status = 'tersedia'
-       LIMIT $2`,
+        WHERE asset_id = $1 AND condition = 'good' AND loan_status = 'tersedia'
+        LIMIT $2`,
       [asset_id, quantity],
     );
 
@@ -177,11 +177,11 @@ exports.createLoan = async (req, res) => {
 
     const { rows } = await client.query(
       `INSERT INTO loan_requests
-         (requester_id, asset_id, quantity, category,
-          borrow_date, return_deadline, notes,
-          attachment_url, attachment_name, attachment_type, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       RETURNING *`,
+          (requester_id, asset_id, quantity, category,
+            borrow_date, return_deadline, notes,
+            attachment_url, attachment_name, attachment_type, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        RETURNING *`,
       [
         req.user.userId,
         asset_id,
@@ -202,7 +202,7 @@ exports.createLoan = async (req, res) => {
     for (const unit of stockRes.rows) {
       await client.query(
         `INSERT INTO loan_unit_assignments (loan_request_id, asset_unit_id)
-         VALUES ($1, $2)`,
+          VALUES ($1, $2)`,
         [loan.id, unit.id],
       );
     }
@@ -213,8 +213,8 @@ exports.createLoan = async (req, res) => {
       // ✅ JOIN user_roles untuk cek is_kaprodi
       const kaprodiRes = await client.query(
         `SELECT p.id FROM profiles p
-         JOIN user_roles ur ON ur.user_id = p.id
-         WHERE ur.role = 'dosen' AND p.is_kaprodi = TRUE`,
+          JOIN user_roles ur ON ur.user_id = p.id
+          WHERE ur.role = 'dosen' AND p.is_kaprodi = TRUE`,
       );
       for (const kp of kaprodiRes.rows) {
         await sendNotif(
@@ -231,8 +231,8 @@ exports.createLoan = async (req, res) => {
       // ✅ JOIN user_roles untuk cari admin
       const adminRes = await client.query(
         `SELECT p.id FROM profiles p
-         JOIN user_roles ur ON ur.user_id = p.id
-         WHERE ur.role = 'admin'`,
+          JOIN user_roles ur ON ur.user_id = p.id
+          WHERE ur.role = 'admin'`,
       );
       for (const adm of adminRes.rows) {
         await sendNotif(
@@ -267,11 +267,11 @@ exports.uploadProposal = async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE loan_requests SET
-         attachment_url  = $1,
-         attachment_name = $2,
-         attachment_type = $3,
-         updated_at = NOW()
-       WHERE id = $4 AND requester_id = $5 RETURNING *`,
+          attachment_url  = $1,
+          attachment_name = $2,
+          attachment_type = $3,
+          updated_at = NOW()
+        WHERE id = $4 AND requester_id = $5 RETURNING *`,
       [
         `/uploads/${req.file.filename}`,
         req.file.originalname,
@@ -291,15 +291,19 @@ exports.uploadProposal = async (req, res) => {
 
 // ─── PATCH konfirmasi pengambilan (admin) ─────────────────────
 exports.confirmPickup = async (req, res) => {
-  const { unit_ids } = req.body;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
+    // Cek loan ada dan statusnya approved_admin
     const loanRes = await client.query(
-      `SELECT * FROM loan_requests WHERE id = $1 AND status = 'approved_admin'`,
+      `SELECT lr.*, a.name AS asset_name
+        FROM loan_requests lr
+        JOIN assets a ON a.id = lr.asset_id
+        WHERE lr.id = $1 AND lr.status = 'approved_admin'`,
       [req.params.id],
     );
+
     if (!loanRes.rows[0])
       return res.status(400).json({
         message: "Peminjaman belum disetujui admin atau tidak ditemukan",
@@ -307,36 +311,39 @@ exports.confirmPickup = async (req, res) => {
 
     const loan = loanRes.rows[0];
 
-    if (!unit_ids || unit_ids.length !== loan.quantity)
-      return res.status(400).json({
-        message: `Jumlah unit yang dialokasikan harus ${loan.quantity}`,
-      });
-
-    for (const uid of unit_ids) {
-      await client.query(
-        `INSERT INTO loan_unit_assignments (loan_request_id, asset_unit_id)
-         VALUES ($1, $2)`,
-        [loan.id, uid],
-      );
-      await client.query(
-        `UPDATE asset_units SET is_available = FALSE WHERE id = $1`,
-        [uid],
-      );
-    }
-
-    await client.query(
-      `UPDATE loan_requests SET status='picked_up', picked_up_at=NOW(), updated_at=NOW()
-       WHERE id = $1`,
+    // Cek unit sudah di-assign (dari createLoan)
+    const unitCheck = await client.query(
+      `SELECT COUNT(*) as count
+        FROM loan_unit_assignments
+        WHERE loan_request_id = $1`,
       [loan.id],
     );
 
+    if (parseInt(unitCheck.rows[0].count) === 0)
+      return res.status(400).json({
+        message: "Unit belum di-assign ke peminjaman ini",
+      });
+
+    // Update status ke picked_up + catat waktu pengambilan
+    await client.query(
+      `UPDATE loan_requests
+        SET status = 'picked_up',
+            picked_up_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1`,
+      [loan.id],
+    );
+    // ✅ Trigger DB (trg_loan_status_change) otomatis update
+    //    loan_status unit → 'dipinjam' dan is_available = false
+
+    // Notifikasi ke peminjam
     await sendNotif(
       client,
       loan.requester_id,
       "loan_pickup",
-      "Aset Siap Diambil",
-      "Peminjaman Anda telah dikonfirmasi pengambilannya.",
-      `/loans/${loan.id}`,
+      "✅ Barang Siap Diambil",
+      `Peminjaman "${loan.asset_name}" telah dikonfirmasi. Silakan ambil barang di admin lab.`,
+      "/pinjaman",
     );
 
     await client.query("COMMIT");
@@ -351,6 +358,10 @@ exports.confirmPickup = async (req, res) => {
 };
 
 // ─── PATCH konfirmasi pengembalian (admin) ────────────────────
+// TAMBAHAN dari sebelumnya:
+//   - Auto-unlock user jika sebelumnya di-lock karena overdue
+//   - Catat unlock di account_lock_log
+//   - Fix notif link → /pinjaman
 exports.confirmReturn = async (req, res) => {
   const { unit_conditions } = req.body;
   const client = await pool.connect();
@@ -358,8 +369,10 @@ exports.confirmReturn = async (req, res) => {
     await client.query("BEGIN");
 
     const loanRes = await client.query(
-      `SELECT * FROM loan_requests 
-       WHERE id = $1 AND status IN ('picked_up', 'approved_admin', 'overdue')`,
+      `SELECT lr.*, a.name AS asset_name
+        FROM loan_requests lr
+        JOIN assets a ON a.id = lr.asset_id
+        WHERE lr.id = $1 AND lr.status IN ('picked_up', 'approved_admin', 'overdue')`,
       [req.params.id],
     );
 
@@ -380,11 +393,12 @@ exports.confirmReturn = async (req, res) => {
         });
     }
 
+    // Update kondisi setiap unit yang dikembalikan
     for (const uc of unit_conditions) {
       await client.query(
         `UPDATE loan_unit_assignments
-         SET return_condition = $1, return_notes = $2
-         WHERE loan_request_id = $3 AND asset_unit_id = $4`,
+          SET return_condition = $1, return_notes = $2
+          WHERE loan_request_id = $3 AND asset_unit_id = $4`,
         [
           uc.return_condition,
           uc.return_notes || null,
@@ -392,32 +406,84 @@ exports.confirmReturn = async (req, res) => {
           uc.asset_unit_id,
         ],
       );
+
       await client.query(
         `UPDATE asset_units
-         SET is_available = TRUE, condition = $1, updated_at = NOW()
-         WHERE id = $2`,
+          SET condition = $1, updated_at = NOW()
+          WHERE id = $2`,
         [uc.return_condition || "good", uc.asset_unit_id],
       );
+      // ✅ Trigger DB otomatis update loan_status unit → 'tersedia'
     }
 
+    // Update status loan → returned
     await client.query(
       `UPDATE loan_requests
-       SET status='returned', returned_at=NOW(), updated_at=NOW()
-       WHERE id=$1`,
+        SET status = 'returned',
+            returned_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1`,
       [loan.id],
     );
 
+    // ✅ FIX BARU: Auto-unlock user jika di-lock karena overdue
+    const profileRes = await client.query(
+      `SELECT is_blocked, auto_locked FROM profiles WHERE id = $1`,
+      [loan.requester_id],
+    );
+
+    const wasAutoLocked = profileRes.rows[0]?.auto_locked === true;
+
+    if (wasAutoLocked) {
+      await client.query(
+        `UPDATE profiles
+          SET is_blocked = false,
+              auto_locked = false,
+              blocked_reason = null,
+              blocked_at = null,
+              updated_at = NOW()
+          WHERE id = $1`,
+        [loan.requester_id],
+      );
+
+      // Catat unlock di account_lock_log
+      await client.query(
+        `INSERT INTO account_lock_log
+            (user_id, action, trigger_type, reason, unlocked_by)
+          VALUES ($1, 'unlock', 'overdue_return', $2, $3)`,
+        [
+          loan.requester_id,
+          `Auto-unlock: barang "${loan.asset_name}" telah dikembalikan`,
+          req.user.id,
+        ],
+      );
+
+      // Notif ke user: akun dibuka kembali
+      await sendNotif(
+        client,
+        loan.requester_id,
+        "account_unlocked",
+        "🔓 Akun Dibuka Kembali",
+        `Akun Anda telah dibuka kembali setelah mengembalikan "${loan.asset_name}".`,
+        "/pinjaman",
+      );
+    }
+
+    // Notifikasi pengembalian ke peminjam
     await sendNotif(
       client,
       loan.requester_id,
       "loan_returned",
-      "Pengembalian Dikonfirmasi",
-      "Aset telah berhasil dikembalikan. Terima kasih.",
-      `/loans/${loan.id}`,
+      "✅ Pengembalian Dikonfirmasi",
+      `"${loan.asset_name}" telah berhasil dikembalikan. Terima kasih!`,
+      "/pinjaman",
     );
 
     await client.query("COMMIT");
-    res.json({ message: "Pengembalian berhasil dikonfirmasi" });
+    res.json({
+      message: "Pengembalian berhasil dikonfirmasi",
+      auto_unlocked: wasAutoLocked,
+    });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("confirmReturn error:", err);
@@ -433,10 +499,10 @@ exports.getLoanUnits = async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT au.id, au.unit_code, au.condition, au.loan_status
-       FROM loan_unit_assignments lua
-       JOIN asset_units au ON lua.asset_unit_id = au.id
-       WHERE lua.loan_request_id = $1
-       ORDER BY au.unit_code`,
+        FROM loan_unit_assignments lua
+        JOIN asset_units au ON lua.asset_unit_id = au.id
+        WHERE lua.loan_request_id = $1
+        ORDER BY au.unit_code`,
       [id],
     );
     res.json({ data: rows });

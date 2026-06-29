@@ -25,8 +25,54 @@ interface Notification {
   created_at: string;
 }
 
+// ── Group notifikasi yang dikirim bersamaan ───────────────────
+interface NotifGroup {
+  groupKey: string;
+  type: string;
+  title: string;
+  is_read: boolean;
+  created_at: string;
+  link?: string;
+  items: Notification[];
+}
+
+const GROUP_WINDOW_MS = 10_000; // FIX: 10 detik
+
+function groupNotifications(items: Notification[]): NotifGroup[] {
+  const sorted = [...items].sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  const groups: NotifGroup[] = [];
+  for (const item of sorted) {
+    const existing = groups.find(
+      (g) =>
+        g.type === item.type &&
+        Math.abs(
+          new Date(g.created_at).getTime() -
+            new Date(item.created_at).getTime(),
+        ) <= GROUP_WINDOW_MS,
+    );
+    if (existing) {
+      existing.items.push(item);
+      if (!item.is_read) existing.is_read = false;
+    } else {
+      groups.push({
+        groupKey: item.id,
+        type: item.type,
+        title: item.title,
+        is_read: item.is_read,
+        created_at: item.created_at,
+        link: item.link,
+        items: [item],
+      });
+    }
+  }
+  return groups;
+}
+
 function Pesan() {
-  const navigate = useNavigate(); // ✅ TanStack Router navigation
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
@@ -38,8 +84,7 @@ function Pesan() {
       setLoading(true);
       const res = await api.get("/api/notifications");
       setNotifications(res.data?.data ?? []);
-    } catch (err) {
-      console.error("Error loading notifications:", err);
+    } catch {
       toast.error("Gagal memuat pesan");
       setNotifications([]);
     } finally {
@@ -47,39 +92,55 @@ function Pesan() {
     }
   };
 
-  const handleMarkAsRead = async (id: string) => {
+  // ✅ Mark semua notifikasi dalam group sebagai dibaca
+  const handleMarkGroupAsRead = async (group: NotifGroup) => {
+    setMarking(group.groupKey);
     try {
-      setMarking(id);
-      await api.patch(`/api/notifications/${id}/read`);
+      for (const notif of group.items) {
+        if (!notif.is_read) {
+          await api.patch(`/api/notifications/${notif.id}/read`);
+        }
+      }
       setNotifications((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+        prev.map((n) =>
+          group.items.find((i) => i.id === n.id) ? { ...n, is_read: true } : n,
+        ),
       );
-      toast.success("Pesan ditandai sudah dibaca");
-    } catch (err) {
-      console.error("Error marking as read:", err);
+      toast.success(
+        group.items.length > 1
+          ? `${group.items.length} pesan ditandai sudah dibaca`
+          : "Pesan ditandai sudah dibaca",
+      );
+    } catch {
       toast.error("Gagal tandai pesan");
     } finally {
       setMarking(null);
     }
   };
 
-  const handleDelete = async (id: string) => {
+  // ✅ Hapus semua notifikasi dalam group
+  const handleDeleteGroup = async (group: NotifGroup) => {
+    setDeleting(group.groupKey);
     try {
-      setDeleting(id);
-      await api.delete(`/api/notifications/${id}`);
-      setNotifications((prev) => prev.filter((n) => n.id !== id));
-      toast.success("Pesan dihapus");
-    } catch (err) {
-      console.error("Error deleting notification:", err);
+      for (const notif of group.items) {
+        await api.delete(`/api/notifications/${notif.id}`);
+      }
+      setNotifications((prev) =>
+        prev.filter((n) => !group.items.find((i) => i.id === n.id)),
+      );
+      toast.success(
+        group.items.length > 1
+          ? `${group.items.length} pesan dihapus`
+          : "Pesan dihapus",
+      );
+    } catch {
       toast.error("Gagal hapus pesan");
     } finally {
       setDeleting(null);
     }
   };
 
-  // ✅ Handle "Lihat Detail" navigation using TanStack Router
   const handleNavigateToLink = (link: string) => {
-    // Map notification links to correct TanStack Router paths
     const linkMap: Record<string, string> = {
       "/approvals": "/approval",
       "/approvals/": "/approval",
@@ -87,15 +148,9 @@ function Pesan() {
       "/loans/": "/pinjaman",
       "/peminjaman": "/pinjaman",
     };
-
-    // Normalize the link
-    const normalizedLink = linkMap[link] ?? link;
-
     try {
-      navigate({ to: normalizedLink as any });
+      navigate({ to: (linkMap[link] ?? link) as any });
     } catch {
-      // Fallback jika route tidak ada
-      console.warn("Route not found:", normalizedLink);
       toast.error("Halaman tidak ditemukan");
     }
   };
@@ -106,14 +161,19 @@ function Pesan() {
     return () => clearInterval(interval);
   }, []);
 
-  const filtered = notifications.filter((n) =>
-    [n.title, n.message, n.type]
-      .filter(Boolean)
-      .some((v) => v && v.toLowerCase().includes(search.toLowerCase())),
+  const allGroups = groupNotifications(notifications);
+
+  const filtered = allGroups.filter(
+    (g) =>
+      !search ||
+      [g.title, ...g.items.map((i) => i.message), g.type].some((v) =>
+        v?.toLowerCase().includes(search.toLowerCase()),
+      ),
   );
 
   const getTypeBadge = (type: string) => {
     const typeMap: Record<string, { label: string; variant: any }> = {
+      loan_approval: { label: "Permintaan Peminjaman", variant: "outline" },
       loan_request_pending: {
         label: "Permintaan Peminjaman",
         variant: "outline",
@@ -137,10 +197,13 @@ function Pesan() {
         variant: "outline",
       },
       loan_overdue: { label: "Terlambat", variant: "destructive" },
-      test: { label: "Test", variant: "outline" },
+      loan_pickup: { label: "Siap Diambil", variant: "default" },
+      loan_returned: { label: "Dikembalikan", variant: "default" },
+      account_locked: { label: "Akun Dikunci", variant: "destructive" },
+      account_unlocked: { label: "Akun Dibuka", variant: "default" },
     };
-    const config = typeMap[type] || { label: type, variant: "outline" };
-    return <Badge variant={config.variant as any}>{config.label}</Badge>;
+    const config = typeMap[type] ?? { label: type, variant: "outline" };
+    return <Badge variant={config.variant}>{config.label}</Badge>;
   };
 
   return (
@@ -150,7 +213,7 @@ function Pesan() {
         description="Riwayat pesan dan pemberitahuan terkait peminjaman Anda."
       />
 
-      {/* Search bar */}
+      {/* Search */}
       <div className="mt-6 mb-4 relative max-w-md">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -161,7 +224,7 @@ function Pesan() {
         />
       </div>
 
-      {/* Notifications list */}
+      {/* List */}
       {loading && notifications.length === 0 ? (
         <div className="mt-8 text-center text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin mx-auto mb-2" />
@@ -181,86 +244,111 @@ function Pesan() {
         </div>
       ) : (
         <div className="mt-6 space-y-3">
-          {filtered.map((notification) => (
-            <div
-              key={notification.id}
-              className={`border rounded-lg p-4 transition ${
-                notification.is_read
-                  ? "bg-muted/30 opacity-70"
-                  : "bg-card border-primary/30"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                {/* Content */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-medium text-sm">
-                      {notification.title}
-                    </h3>
-                    {getTypeBadge(notification.type)}
-                    {!notification.is_read && (
-                      <span className="inline-block h-2 w-2 rounded-full bg-primary ml-auto" />
+          {filtered.map((group) => {
+            const isMulti = group.items.length > 1;
+            const isMarkingThis = marking === group.groupKey;
+            const isDeletingThis = deleting === group.groupKey;
+
+            return (
+              <div
+                key={group.groupKey}
+                className={`border rounded-lg p-4 transition ${
+                  group.is_read
+                    ? "bg-muted/30 opacity-70"
+                    : "bg-card border-primary/30"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    {/* Title + badges */}
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <h3 className="font-medium text-sm">{group.title}</h3>
+                      {getTypeBadge(group.type)}
+                      {/* Badge jumlah aset jika grouped */}
+                      {isMulti && (
+                        <Badge variant="secondary" className="text-xs">
+                          {group.items.length} aset
+                        </Badge>
+                      )}
+                      {!group.is_read && (
+                        <span className="inline-block h-2 w-2 rounded-full bg-primary ml-auto shrink-0" />
+                      )}
+                    </div>
+
+                    {/* Messages */}
+                    {isMulti ? (
+                      <ul className="mt-1 space-y-0.5">
+                        {group.items.map((item) => (
+                          <li
+                            key={item.id}
+                            className="text-sm text-muted-foreground"
+                          >
+                            • {item.message}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-muted-foreground mb-2">
+                        {group.items[0].message}
+                      </p>
                     )}
+
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      {new Date(group.created_at).toLocaleString("id-ID")}
+                    </p>
                   </div>
 
-                  <p className="text-sm text-muted-foreground mb-2">
-                    {notification.message}
-                  </p>
+                  {/* Actions */}
+                  <div className="flex gap-1 shrink-0">
+                    {!group.is_read && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleMarkGroupAsRead(group)}
+                        disabled={!!marking}
+                        title="Tandai sudah dibaca"
+                      >
+                        {isMarkingThis ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <Eye className="size-3.5" />
+                        )}
+                      </Button>
+                    )}
 
-                  <p className="text-xs text-muted-foreground">
-                    {new Date(notification.created_at).toLocaleString("id-ID")}
-                  </p>
-                </div>
-
-                {/* Actions */}
-                <div className="flex gap-1 shrink-0">
-                  {!notification.is_read && (
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => handleMarkAsRead(notification.id)}
-                      disabled={marking === notification.id}
-                      title="Tandai sudah dibaca"
+                      className="text-destructive hover:bg-destructive/10"
+                      onClick={() => handleDeleteGroup(group)}
+                      disabled={!!deleting}
+                      title="Hapus pesan"
                     >
-                      {marking === notification.id ? (
+                      {isDeletingThis ? (
                         <Loader2 className="size-3.5 animate-spin" />
                       ) : (
-                        <Eye className="size-3.5" />
+                        <Trash2 className="size-3.5" />
                       )}
                     </Button>
-                  )}
-
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-destructive hover:bg-destructive/10"
-                    onClick={() => handleDelete(notification.id)}
-                    disabled={deleting === notification.id}
-                    title="Hapus pesan"
-                  >
-                    {deleting === notification.id ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <Trash2 className="size-3.5" />
-                    )}
-                  </Button>
+                  </div>
                 </div>
+
+                {/* Link */}
+                {group.link && (
+                  <div className="mt-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleNavigateToLink(group.link!)}
+                    >
+                      Lihat Detail
+                    </Button>
+                  </div>
+                )}
               </div>
-
-              {/* ✅ Link action - pakai navigate() bukan <a href> */}
-              {notification.link && (
-                <div className="mt-3">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleNavigateToLink(notification.link!)}
-                  >
-                    Lihat Detail
-                  </Button>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

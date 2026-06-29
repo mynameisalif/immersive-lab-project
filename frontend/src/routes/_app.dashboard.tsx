@@ -8,7 +8,6 @@ import {
   CardTitle,
 } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
 import {
   Boxes,
   AlertCircle,
@@ -16,10 +15,13 @@ import {
   Clock,
   CheckCircle2,
   XCircle,
+  PackageCheck,
+  PackageOpen,
+  Hourglass,
+  Package,
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { cn } from "../lib/utils";
 
 export const Route = createFileRoute("/_app/dashboard")({
   component: Dashboard,
@@ -28,141 +30,191 @@ export const Route = createFileRoute("/_app/dashboard")({
 
 interface LoanRequest {
   id: string;
-  requester_id: string;
-  asset_id: string;
   quantity: number;
   category: string;
   status: string;
   borrow_date: string;
+  returned_at?: string | null;
   return_deadline: string;
   created_at: string;
   asset_name: string;
+  requester_id: string; // ✅ tambah untuk grouping
   requester_name: string;
 }
 
-interface Asset {
-  id: string;
-  name: string;
+// ── Loan Group ────────────────────────────────────────────────
+interface LoanGroup {
+  groupKey: string;
+  requester_id: string;
+  requester_name: string;
+  status: string;
+  borrow_date: string;
+  return_deadline: string;
+  created_at: string;
+  category: string;
+  items: LoanRequest[];
 }
+
+// ✅ Grouping 10 detik — mencegah batch berbeda waktu menyatu
+const GROUP_WINDOW_MS = 10_000;
+
+function groupLoans(loans: LoanRequest[]): LoanGroup[] {
+  const sorted = [...loans].sort(
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+  );
+  const groups: LoanGroup[] = [];
+  for (const item of sorted) {
+    const existing = groups.find(
+      (g) =>
+        g.requester_id === item.requester_id &&
+        g.borrow_date === item.borrow_date &&
+        g.return_deadline === item.return_deadline &&
+        g.category === item.category &&
+        Math.abs(
+          new Date(g.created_at).getTime() -
+            new Date(item.created_at).getTime(),
+        ) <= GROUP_WINDOW_MS,
+    );
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      groups.push({
+        groupKey: item.id,
+        requester_id: item.requester_id,
+        requester_name: item.requester_name,
+        status: item.status,
+        borrow_date: item.borrow_date,
+        return_deadline: item.return_deadline,
+        created_at: item.created_at,
+        category: item.category,
+        items: [item],
+      });
+    }
+  }
+  return groups;
+}
+
+// ── Helpers (tidak diubah) ─────────────────────────────────────
+const categoryLabel: Record<string, string> = {
+  kelas_praktikum: "Perkuliahan",
+  event_kegiatan: "Event",
+};
+
+const getTimeString = (createdAt: string): string => {
+  const d = new Date(createdAt);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
+const formatDate = (d: string) =>
+  new Date(d).toLocaleDateString("id-ID", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+
+const getStatusBadge = (status: string) => {
+  const map: Record<string, { label: string; variant: any }> = {
+    pending: { label: "Menunggu Kaprodi", variant: "outline" },
+    approved_dosen: { label: "Menunggu Admin", variant: "secondary" },
+    approved_admin: { label: "Disetujui", variant: "default" },
+    picked_up: { label: "Dipinjam", variant: "default" },
+    returned: { label: "Selesai", variant: "default" },
+    rejected: { label: "Ditolak", variant: "destructive" },
+    overdue: { label: "Terlambat", variant: "destructive" },
+  };
+  const c = map[status] ?? { label: status, variant: "outline" };
+  return <Badge variant={c.variant}>{c.label}</Badge>;
+};
+
+// ✅ isLate tidak diubah
+const isLate = (r: LoanRequest): boolean => {
+  if (r.status === "overdue") return true;
+  if (r.status === "returned" && r.returned_at && r.return_deadline) {
+    return new Date(r.returned_at) > new Date(r.return_deadline);
+  }
+  if (
+    ["picked_up", "approved_admin", "approved_dosen"].includes(r.status) &&
+    r.return_deadline
+  ) {
+    return new Date(r.return_deadline) < new Date();
+  }
+  return false;
+};
 
 function Dashboard() {
   const { role } = useAuth();
-  const [stats, setStats] = useState({
+  if (role === "admin") return <AdminDashboard />;
+  return <UserDashboard />;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ADMIN DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+function AdminDashboard() {
+  const [assetStats, setAssetStats] = useState({
     totalAsset: 0,
     stokMenipis: 0,
   });
-  const [recentLoans, setRecentLoans] = useState<LoanRequest[]>([]);
-  const [overdue, setOverdue] = useState(0);
-  const [rejected, setRejected] = useState(0);
+  const [counts, setCounts] = useState({
+    aktif: 0,
+    selesai: 0,
+    pendingAdmin: 0,
+    dipinjam: 0,
+    terlambat: 0,
+    ditolak: 0,
+  });
+  // ✅ Simpan groups, bukan raw loans
+  const [recentGroups, setRecentGroups] = useState<LoanGroup[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // ✅ Helper: Calculate hours elapsed since created_at
-  const calculateHoursElapsed = (createdAt: string): number => {
-    const created = new Date(createdAt);
-    const now = new Date();
-    return Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60));
-  };
-
-  const loadDashboard = async () => {
+  const load = async () => {
     try {
       setLoading(true);
+      const [statsRes, loansRes] = await Promise.all([
+        api.get("/api/assets/stats"),
+        api.get("/api/loans"),
+      ]);
+      setAssetStats(statsRes.data?.data ?? { totalAsset: 0, stokMenipis: 0 });
+      const all: LoanRequest[] = loansRes.data?.data ?? [];
 
-      // Get asset stats
-      const statsRes = await api.get("/api/assets/stats");
-      setStats(statsRes.data?.data ?? { totalAsset: 0, stokMenipis: 0 });
-
-      // Get all loans untuk dashboard
-      const loansRes = await api.get("/api/loans?status=all");
-      const allLoans = loansRes.data?.data ?? [];
-
-      // ✅ FILTER: Hanya tampilkan peminjaman dari jam 12 malam (00:00) hingga sekarang (WIB)
-      // Logic: jika borrow_date < hari ini, jangan tampilkan di dashboard
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // Set ke jam 00:00 WIB hari ini
-
-      const todayLoans = allLoans.filter((loan: LoanRequest) => {
-        const borrowDate = new Date(loan.borrow_date);
-        // Hanya tampilkan jika borrow_date adalah hari ini atau nanti
-        return borrowDate >= today;
+      // KPI counts — tidak diubah, hitung dari individual loans
+      setCounts({
+        aktif: all.filter((l) =>
+          [
+            "pending",
+            "approved_dosen",
+            "approved_admin",
+            "picked_up",
+            "overdue",
+          ].includes(l.status),
+        ).length,
+        selesai: all.filter((l) => l.status === "returned").length,
+        pendingAdmin: all.filter((l) => l.status === "approved_dosen").length,
+        dipinjam: all.filter((l) => l.status === "picked_up").length,
+        terlambat: all.filter(isLate).length,
+        ditolak: all.filter((l) => l.status === "rejected").length,
       });
 
-      // ✅ Filter untuk "Peminjaman Terbaru" - 24 hour filter dari created_at
-      const twentyFourHoursAgo = new Date();
-      twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
-
-      const relevantStatuses = [
-        "pending",
-        "approved_dosen",
-        "approved_admin",
-        "picked_up",
-        "returned",
-        "rejected",
-        "overdue",
-      ];
-
-      const recent = todayLoans
-        .filter((l: LoanRequest) => {
-          // Include if: status is relevant AND created within 24 hours
-          const createdAt = new Date(l.created_at);
-          return (
-            relevantStatuses.includes(l.status) &&
-            createdAt >= twentyFourHoursAgo
-          );
-        })
+      // ✅ Recent 24 jam → group sebelum masuk tabel
+      const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recent = all
+        .filter((l) => new Date(l.created_at) >= since24h)
         .sort(
-          (a: LoanRequest, b: LoanRequest) =>
+          (a, b) =>
             new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-        )
-        .slice(0, 10); // Show top 10
-
-      setRecentLoans(recent);
-
-      // Count overdue
-      const overdueCount = todayLoans.filter(
-        (l: LoanRequest) => l.status === "overdue",
-      ).length;
-      setOverdue(overdueCount);
-
-      // Count rejected
-      const rejectedCount = allLoans.filter(
-        (l: LoanRequest) => l.status === "rejected",
-      ).length;
-      setRejected(rejectedCount);
+        );
+      setRecentGroups(groupLoans(recent));
     } catch (err) {
-      console.error("Dashboard load error:", err);
+      console.error("AdminDashboard load error:", err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    void loadDashboard();
+    void load();
   }, []);
-
-  const getStatusBadge = (status: string) => {
-    const statusMap: Record<string, { label: string; variant: any }> = {
-      pending: { label: "Menunggu Kaprodi", variant: "outline" },
-      approved_dosen: {
-        label: "Menunggu Admin",
-        variant: "secondary",
-      },
-      approved_admin: { label: "Disetujui", variant: "default" },
-      picked_up: { label: "Diambil", variant: "default" },
-      returned: { label: "Selesai", variant: "default" },
-      rejected: { label: "Ditolak", variant: "destructive" },
-      overdue: { label: "Terlambat", variant: "destructive" },
-    };
-    const config = statusMap[status] || { label: status, variant: "outline" };
-    return <Badge variant={config.variant as any}>{config.label}</Badge>;
-  };
-
-  if (role !== "admin") {
-    return (
-      <div className="rounded-xl border bg-card p-8 text-center text-muted-foreground">
-        Hanya admin yang dapat mengakses halaman ini.
-      </div>
-    );
-  }
 
   return (
     <>
@@ -171,69 +223,121 @@ function Dashboard() {
         description="Ringkasan status aset dan peminjaman lab."
       />
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Total Aset */}
+      {/* Row 1: Asset stats — tidak diubah */}
+      <div className="mt-6 grid gap-4 sm:grid-cols-2">
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Total Aset</CardTitle>
             <Boxes className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalAsset}</div>
+            <div className="text-2xl font-bold">{assetStats.totalAsset}</div>
             <p className="text-xs text-muted-foreground">
               Jumlah aset yang terdaftar
             </p>
           </CardContent>
         </Card>
-
-        {/* Stok Menipis */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Stok Menipis</CardTitle>
             <AlertCircle className="h-4 w-4 text-warning" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-warning">
-              {stats.stokMenipis}
+              {assetStats.stokMenipis}
             </div>
             <p className="text-xs text-muted-foreground">
               Aset dengan stok ≤ 1 unit
             </p>
           </CardContent>
         </Card>
+      </div>
 
-        {/* Terlambat */}
+      {/* Row 2: 6 Loan cards — tidak diubah */}
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">
+              Peminjaman Aktif
+            </CardTitle>
+            <Package className="h-4 w-4 text-blue-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-600">
+              {counts.aktif}
+            </div>
+            <p className="text-xs text-muted-foreground">Sedang berjalan</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">
+              Peminjaman Selesai
+            </CardTitle>
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-600">
+              {counts.selesai}
+            </div>
+            <p className="text-xs text-muted-foreground">Sudah dikembalikan</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">
+              Pending Approval Final
+            </CardTitle>
+            <Hourglass className="h-4 w-4 text-yellow-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-yellow-600">
+              {counts.pendingAdmin}
+            </div>
+            <p className="text-xs text-muted-foreground">Menunggu admin</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">
+              Sedang Dipinjam
+            </CardTitle>
+            <PackageOpen className="h-4 w-4 text-primary" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{counts.dipinjam}</div>
+            <p className="text-xs text-muted-foreground">
+              Barang ada di peminjam
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Terlambat</CardTitle>
             <TrendingUp className="h-4 w-4 text-destructive" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-destructive">{overdue}</div>
-            <p className="text-xs text-muted-foreground">
-              Peminjaman melewati deadline
-            </p>
+            <div className="text-2xl font-bold text-destructive">
+              {counts.terlambat}
+            </div>
+            <p className="text-xs text-muted-foreground">Melewati deadline</p>
           </CardContent>
         </Card>
-
-        {/* Ditolak */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Ditolak</CardTitle>
             <XCircle className="h-4 w-4 text-destructive" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-destructive">
-              {rejected}
+              {counts.ditolak}
             </div>
-            <p className="text-xs text-muted-foreground">
-              Permintaan yang ditolak
-            </p>
+            <p className="text-xs text-muted-foreground">Permintaan ditolak</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Peminjaman Terbaru */}
+      {/* Tabel Peminjaman Terbaru — ✅ Grouped */}
       <div className="mt-6">
         <Card>
           <CardHeader>
@@ -241,7 +345,7 @@ function Dashboard() {
               <div>
                 <CardTitle>Peminjaman Terbaru</CardTitle>
                 <p className="text-xs text-muted-foreground mt-1">
-                  ⏰ Menampilkan peminjaman dalam 24 jam terakhir sejak dibuat
+                  ⏰ Peminjaman yang dibuat dalam 24 jam terakhir
                 </p>
               </div>
               <Clock className="h-5 w-5 text-muted-foreground" />
@@ -249,57 +353,279 @@ function Dashboard() {
           </CardHeader>
           <CardContent>
             {loading ? (
-              <div className="text-center py-8 text-sm text-muted-foreground">
+              <div className="py-8 text-center text-sm text-muted-foreground">
                 Memuat data...
               </div>
-            ) : recentLoans.length === 0 ? (
-              <div className="text-center py-8 text-sm text-muted-foreground">
+            ) : recentGroups.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
                 Tidak ada peminjaman dalam 24 jam terakhir
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b">
-                      <th className="text-left py-2 px-2 font-semibold">
-                        Asset
+                    <tr className="border-b text-muted-foreground">
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Aset
                       </th>
-                      <th className="text-left py-2 px-2 font-semibold">
-                        Requester
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Peminjam
                       </th>
-                      <th className="text-left py-2 px-2 font-semibold">
+                      <th className="py-2 px-2 text-left font-semibold">
                         Status
                       </th>
-                      <th className="text-left py-2 px-2 font-semibold">
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Kategori
+                      </th>
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Tgl Pinjam
+                      </th>
+                      <th className="py-2 px-2 text-left font-semibold">
                         Batas Waktu
                       </th>
-                      <th className="text-center py-2 px-2 font-semibold">
-                        Jam Ke-
+                      <th className="py-2 px-2 text-center font-semibold">
+                        Jam
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {recentLoans.map((loan: LoanRequest) => (
+                    {recentGroups.map((group) => (
                       <tr
-                        key={loan.id}
-                        className="border-b hover:bg-muted/50 transition"
+                        key={group.groupKey}
+                        className="border-b transition hover:bg-muted/50"
                       >
-                        <td className="py-2 px-2 truncate">
-                          {loan.asset_name || "—"}
-                        </td>
-                        <td className="py-2 px-2 truncate text-muted-foreground">
-                          {loan.requester_name || "—"}
-                        </td>
+                        {/* ✅ Aset: 1 baris jika single, list jika multi */}
                         <td className="py-2 px-2">
-                          {getStatusBadge(loan.status)}
-                        </td>
-                        <td className="py-2 px-2 text-muted-foreground text-xs">
-                          {new Date(loan.return_deadline).toLocaleDateString(
-                            "id-ID",
+                          {group.items.length > 1 ? (
+                            <ul className="space-y-0.5">
+                              {group.items.map((item) => (
+                                <li key={item.id} className="text-xs">
+                                  • {item.asset_name} ×{item.quantity}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <span className="font-medium">
+                              {group.items[0].asset_name}
+                            </span>
                           )}
                         </td>
-                        <td className="py-2 px-2 text-center font-medium">
-                          {calculateHoursElapsed(loan.created_at)}
+                        <td className="py-2 px-2 text-muted-foreground">
+                          {group.requester_name}
+                        </td>
+                        <td className="py-2 px-2">
+                          {getStatusBadge(group.status)}
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground text-xs">
+                          {categoryLabel[group.category] ?? group.category}
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground text-xs">
+                          {formatDate(group.borrow_date)}
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground text-xs">
+                          {formatDate(group.return_deadline)}
+                        </td>
+                        <td className="py-2 px-2 text-center font-mono font-medium">
+                          {getTimeString(group.created_at)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// USER DASHBOARD — tidak diubah selain grouping tabel
+// ═══════════════════════════════════════════════════════════════
+function UserDashboard() {
+  const { profile, role } = useAuth();
+  const [myLoans, setMyLoans] = useState<LoanRequest[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    try {
+      setLoading(true);
+      const res = await api.get("/api/loans");
+      setMyLoans(res.data?.data ?? []);
+    } catch (err) {
+      console.error("UserDashboard load error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  // Cards — tidak diubah
+  const aktifCount = myLoans.filter((l) => l.status === "picked_up").length;
+  const waitingCount = myLoans.filter((l) =>
+    ["pending", "approved_dosen"].includes(l.status),
+  ).length;
+  const approvedCount = myLoans.filter(
+    (l) => l.status === "approved_admin",
+  ).length;
+
+  // ✅ Recent 24 jam → group sebelum render tabel
+  const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recent = myLoans
+    .filter((l) => new Date(l.created_at) >= since24h)
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  const recentGroups = groupLoans(recent);
+
+  return (
+    <>
+      <PageHeader
+        title="Dashboard"
+        description={`Selamat datang, ${profile?.full_name ?? ""}! Berikut ringkasan peminjaman Anda.`}
+      />
+
+      {/* 3 Cards — tidak diubah */}
+      <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">
+              Pinjaman Aktif
+            </CardTitle>
+            <PackageOpen className="h-4 w-4 text-primary" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{aktifCount}</div>
+            <p className="text-xs text-muted-foreground">
+              Barang sedang dipinjam
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">
+              Menunggu Approval
+            </CardTitle>
+            <Hourglass className="h-4 w-4 text-yellow-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-yellow-600">
+              {waitingCount}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {role === "student"
+                ? "Menunggu kaprodi / admin"
+                : "Menunggu persetujuan admin"}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">
+              Sudah Disetujui
+            </CardTitle>
+            <PackageCheck className="h-4 w-4 text-green-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-600">
+              {approvedCount}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Siap diambil di admin lab
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Tabel Peminjaman Saya — ✅ Grouped & 24 jam */}
+      <div className="mt-6">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Peminjaman Saya</CardTitle>
+                <p className="text-xs text-muted-foreground mt-1">
+                  ⏰ Peminjaman yang dibuat dalam 24 jam terakhir
+                </p>
+              </div>
+              <Clock className="h-5 w-5 text-muted-foreground" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                Memuat data...
+              </div>
+            ) : recentGroups.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                Tidak ada peminjaman dalam 24 jam terakhir.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-muted-foreground">
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Aset
+                      </th>
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Status
+                      </th>
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Kategori
+                      </th>
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Tgl Pinjam
+                      </th>
+                      <th className="py-2 px-2 text-left font-semibold">
+                        Batas Waktu
+                      </th>
+                      <th className="py-2 px-2 text-center font-semibold">
+                        Jam
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentGroups.map((group) => (
+                      <tr
+                        key={group.groupKey}
+                        className="border-b transition hover:bg-muted/50"
+                      >
+                        <td className="py-2 px-2">
+                          {group.items.length > 1 ? (
+                            <ul className="space-y-0.5">
+                              {group.items.map((item) => (
+                                <li key={item.id} className="text-xs">
+                                  • {item.asset_name} ×{item.quantity}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <span className="font-medium">
+                              {group.items[0].asset_name}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 px-2">
+                          {getStatusBadge(group.status)}
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground text-xs">
+                          {categoryLabel[group.category] ?? group.category}
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground text-xs">
+                          {formatDate(group.borrow_date)}
+                        </td>
+                        <td className="py-2 px-2 text-muted-foreground text-xs">
+                          {formatDate(group.return_deadline)}
+                        </td>
+                        <td className="py-2 px-2 text-center font-mono font-medium">
+                          {getTimeString(group.created_at)}
                         </td>
                       </tr>
                     ))}

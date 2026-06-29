@@ -32,7 +32,7 @@ const staffNav: Item[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
   { to: "/status-approval", label: "Status Approval", icon: ListChecks },
-  { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
+  // { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
 ];
 
@@ -52,7 +52,7 @@ const dosenNav: Item[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
   { to: "/status-approval", label: "Status Approval", icon: ListChecks },
-  { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
+  // { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
   { to: "/laporan", label: "Laporan Peminjaman", icon: BarChart3 },
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
 ];
@@ -66,6 +66,7 @@ const adminNav: Item[] = [
   { to: "/verifikasi", label: "Verifikasi NIM/NIP", icon: PackageCheck },
   { to: "/users", label: "Pengguna", icon: Users },
   { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
+  { to: "/pengambilan", label: "Pengambilan", icon: ListChecks },
   { to: "/laporan", label: "Laporan Peminjaman", icon: BarChart3 },
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
 ];

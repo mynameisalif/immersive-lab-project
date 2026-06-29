@@ -33,6 +33,7 @@ export const Route = createFileRoute("/_app/pengembalian")({
   head: () => ({ meta: [{ title: "Pengembalian · MNP Lab Loan" }] }),
 });
 
+// ── Types ─────────────────────────────────────────────────────
 interface Row {
   id: string;
   status: string;
@@ -47,6 +48,19 @@ interface Row {
   requester_id?: string;
   nim_nip?: string | null;
   quantity?: number;
+  created_at: string; // ✅ untuk grouping
+  category?: string; // ✅ untuk grouping
+}
+
+interface RowGroup {
+  groupKey: string;
+  requester_id: string;
+  requester_name: string;
+  nim_nip: string | null;
+  borrow_date: string;
+  return_deadline: string;
+  created_at: string;
+  items: Row[];
 }
 
 interface UnitDetail {
@@ -56,9 +70,46 @@ interface UnitDetail {
   loan_status: string;
 }
 
+// ── Helpers ───────────────────────────────────────────────────
+const GROUP_WINDOW_MS = 10_000; // FIX: 10 detik
+
+function groupRows(items: Row[]): RowGroup[] {
+  const sorted = [...items].sort(
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+  );
+  const groups: RowGroup[] = [];
+  for (const item of sorted) {
+    const existing = groups.find(
+      (g) =>
+        g.requester_id === item.requester_id &&
+        g.borrow_date === item.borrow_date &&
+        g.return_deadline === item.return_deadline &&
+        Math.abs(
+          new Date(g.created_at).getTime() -
+            new Date(item.created_at).getTime(),
+        ) <= GROUP_WINDOW_MS,
+    );
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      groups.push({
+        groupKey: item.id,
+        requester_id: item.requester_id ?? "",
+        requester_name: item.requester_name ?? "—",
+        nim_nip: item.nim_nip ?? null,
+        borrow_date: item.borrow_date,
+        return_deadline: item.return_deadline,
+        created_at: item.created_at,
+        items: [item],
+      });
+    }
+  }
+  return groups;
+}
+
 const mapStatus = (s: string): LoanStatus => {
   const map: Record<string, LoanStatus> = {
-    approved_admin: "approved",
     picked_up: "picked_up",
     returned: "returned",
     overdue: "overdue",
@@ -73,12 +124,24 @@ const formatDate = (d: string) => {
   return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()}`;
 };
 
+const getMerkLabel = (r: Row) => {
+  const parts = [r.merk, r.type].filter(Boolean).join(" ");
+  return parts || r.asset_name;
+};
+
+const isOverdue = (deadline: string) => new Date(deadline) < new Date();
+
+// ── Component ─────────────────────────────────────────────────
 function Pengembalian() {
   const { user, role } = useAuth();
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedLoan, setSelectedLoan] = useState<Row | null>(null);
-  const [units, setUnits] = useState<UnitDetail[]>([]);
+
+  // Dialog state
+  const [selectedGroup, setSelectedGroup] = useState<RowGroup | null>(null);
+  const [groupUnits, setGroupUnits] = useState<Record<string, UnitDetail[]>>(
+    {},
+  );
   const [unitConditions, setUnitConditions] = useState<Record<string, string>>(
     {},
   );
@@ -92,12 +155,13 @@ function Pengembalian() {
       const res = await getLoans();
       const data = res.data?.data ?? [];
 
+      // ✅ FIX: hanya picked_up dan overdue (hapus approved_admin!)
       let filtered: Row[] = data.filter((r: any) =>
-        ["picked_up", "overdue", "approved_admin"].includes(r.status),
+        ["picked_up", "overdue"].includes(r.status),
       );
 
       if (role === "student") {
-        filtered = filtered.filter((r) => r.requester_id === user?.id);
+        filtered = filtered.filter((r: any) => r.requester_id === user?.id);
       }
 
       const mapped: Row[] = filtered
@@ -115,6 +179,8 @@ function Pengembalian() {
           requester_id: r.requester_id,
           nim_nip: r.nim_nip ?? null,
           quantity: r.quantity ?? 1,
+          created_at: r.created_at,
+          category: r.category ?? "",
         }))
         .sort(
           (a: Row, b: Row) =>
@@ -134,80 +200,75 @@ function Pengembalian() {
     void load();
   }, [user, role]);
 
-  const openDialog = async (loan: Row) => {
-    setSelectedLoan(loan);
+  // ✅ Buka dialog untuk group — fetch units semua loan dalam group
+  const openGroupDialog = async (group: RowGroup) => {
+    setSelectedGroup(group);
     setReturnNotes("");
     setUnitConditions({});
+    setGroupUnits({});
     setLoadingUnits(true);
-    try {
-      const res = await api.get(`/api/loans/${loan.id}/units`);
-      const unitData: UnitDetail[] = res.data?.data ?? [];
-      setUnits(unitData);
-      const initialConditions: Record<string, string> = {};
-      unitData.forEach((u) => {
-        initialConditions[u.id] = u.condition;
-      });
-      setUnitConditions(initialConditions);
-    } catch (err: any) {
-      console.error("Error loading units:", err);
-      toast.error("Gagal memuat data unit");
-      setUnits([]);
-    } finally {
-      setLoadingUnits(false);
+
+    const allUnits: Record<string, UnitDetail[]> = {};
+    const initialConditions: Record<string, string> = {};
+
+    for (const loan of group.items) {
+      try {
+        const res = await api.get(`/api/loans/${loan.id}/units`);
+        const units: UnitDetail[] = res.data?.data ?? [];
+        allUnits[loan.id] = units;
+        units.forEach((u) => {
+          initialConditions[u.id] = u.condition;
+        });
+      } catch {
+        allUnits[loan.id] = [];
+      }
     }
+
+    setGroupUnits(allUnits);
+    setUnitConditions(initialConditions);
+    setLoadingUnits(false);
   };
 
-  const confirmReturn = async () => {
-    if (!selectedLoan) return;
-
+  // ✅ Konfirmasi semua loan dalam group
+  const confirmGroupReturn = async () => {
+    if (!selectedGroup) return;
     setSubmitting(true);
-    try {
-      // Format request body sesuai backend
-      const unit_conditions = Object.entries(unitConditions)
-        .map(([asset_unit_id, return_condition]) => ({
-          asset_unit_id,
-          return_condition,
+
+    let successCount = 0;
+
+    for (const loan of selectedGroup.items) {
+      const loanUnits = groupUnits[loan.id] ?? [];
+      const unit_conditions = loanUnits
+        .map((u) => ({
+          asset_unit_id: u.id,
+          return_condition: unitConditions[u.id] ?? "good",
           return_notes: returnNotes?.trim() || null,
         }))
-        .filter((uc) => uc.asset_unit_id && uc.return_condition); // Validate
+        .filter((uc) => uc.asset_unit_id);
 
-      if (unit_conditions.length === 0) {
-        toast.error("Pilih kondisi untuk minimal satu unit");
-        setSubmitting(false);
-        return;
+      if (unit_conditions.length === 0) continue;
+
+      try {
+        await api.patch(`/api/loans/${loan.id}/return`, { unit_conditions });
+        successCount++;
+      } catch (err: any) {
+        toast.error(
+          `Gagal proses ${getMerkLabel(loan)}: ${err.response?.data?.message ?? "Error"}`,
+        );
       }
-
-      console.log("Sending PATCH request with:", {
-        loan_id: selectedLoan.id,
-        body: { unit_conditions },
-      });
-
-      const res = await api.patch(`/api/loans/${selectedLoan.id}/return`, {
-        unit_conditions,
-      });
-
-      console.log("Response:", res);
-      toast.success(
-        "Pengembalian berhasil dikonfirmasi! Stok otomatis diupdate.",
-      );
-      setSelectedLoan(null);
-      void load();
-    } catch (err: any) {
-      console.error("Confirm return error:", err.response || err);
-      const errorMsg = err.response?.data?.message ?? "Terjadi kesalahan";
-      toast.error(errorMsg);
-    } finally {
-      setSubmitting(false);
     }
-  };
 
-  const getAssetLabel = (r: Row) => {
-    const parts = [r.merk, r.type].filter(Boolean).join(" ");
-    return parts || r.asset_name;
-  };
+    setSubmitting(false);
 
-  const isOverdue = (deadline: string) => {
-    return new Date(deadline) < new Date();
+    if (successCount > 0) {
+      toast.success(
+        selectedGroup.items.length > 1
+          ? `${successCount} aset berhasil dikembalikan! Stok otomatis diupdate.`
+          : "Pengembalian berhasil dikonfirmasi! Stok otomatis diupdate.",
+      );
+      setSelectedGroup(null);
+      void load();
+    }
   };
 
   const getPageTitle = () => {
@@ -217,14 +278,14 @@ function Pengembalian() {
   };
 
   const getPageDescription = () => {
-    if (role === "admin") {
+    if (role === "admin")
       return "Verifikasi dan konfirmasi pengembalian aset dari peminjam.";
-    }
-    if (role === "dosen") {
+    if (role === "dosen")
       return "Pantau status pengembalian aset dari mahasiswa Anda.";
-    }
     return "Lihat status pengembalian aset yang Anda pinjam.";
   };
+
+  const groups = groupRows(rows);
 
   return (
     <>
@@ -234,7 +295,7 @@ function Pengembalian() {
         <div className="mt-8 text-center text-sm text-muted-foreground">
           Memuat data…
         </div>
-      ) : rows.length === 0 ? (
+      ) : groups.length === 0 ? (
         <div className="mt-8">
           <EmptyState
             icon={ArrowLeftRight}
@@ -247,80 +308,112 @@ function Pengembalian() {
           />
         </div>
       ) : (
-        <div className="mt-6 overflow-x-auto rounded-xl border bg-card shadow-(--shadow-card)">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="px-4 py-3">ID</th>
-                {role !== "student" && <th className="px-4 py-3">Peminjam</th>}
-                <th className="px-4 py-3">Aset</th>
-                <th className="px-4 py-3">Pinjam</th>
-                <th className="px-4 py-3">Tenggat</th>
-                <th className="px-4 py-3">Status</th>
-                {role === "admin" && <th className="px-4 py-3">Aksi</th>}
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {rows.map((r) => (
-                <tr key={r.id} className="hover:bg-muted/30">
-                  <td className="px-4 py-3 font-mono text-xs">
-                    {r.id.slice(0, 8)}
-                  </td>
-                  {role !== "student" && (
-                    <td className="px-4 py-3">
-                      <p className="font-medium">{r.requester_name}</p>
-                      {r.nim_nip && (
-                        <p className="font-mono text-xs text-muted-foreground">
-                          {r.nim_nip}
-                        </p>
+        <div className="mt-6 space-y-3">
+          {groups.map((group) => {
+            const isMulti = group.items.length > 1;
+            const late = isOverdue(group.return_deadline);
+
+            return (
+              <div
+                key={group.groupKey}
+                className="rounded-xl border bg-card p-5 shadow-(--shadow-card)"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    {/* ID & Status */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {group.groupKey.slice(0, 8)}
+                      </span>
+                      <StatusBadge status={mapStatus(group.items[0].status)} />
+                      {late && (
+                        <span className="text-xs font-medium text-destructive">
+                          ⚠️ Terlambat
+                        </span>
                       )}
-                    </td>
-                  )}
-                  <td className="px-4 py-3 font-medium">{getAssetLabel(r)}</td>
-                  <td className="px-4 py-3">{formatDate(r.borrow_date)}</td>
-                  <td
-                    className={cn(
-                      "px-4 py-3",
-                      isOverdue(r.return_deadline) && r.status !== "returned"
-                        ? "text-destructive font-medium"
-                        : "",
+                    </div>
+
+                    {/* Aset list */}
+                    {isMulti ? (
+                      <div className="mt-2">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <Package className="size-3.5 text-muted-foreground" />
+                          <span className="text-xs text-muted-foreground font-medium">
+                            {group.items.length} aset dalam satu pengajuan:
+                          </span>
+                        </div>
+                        <ul className="ml-5 space-y-0.5">
+                          {group.items.map((item) => (
+                            <li
+                              key={item.id}
+                              className="font-display font-semibold text-sm"
+                            >
+                              • {getMerkLabel(item)}
+                              {item.quantity ? ` × ${item.quantity} unit` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <h3 className="mt-1 font-display font-semibold">
+                        {getMerkLabel(group.items[0])}
+                        {group.items[0].quantity
+                          ? ` × ${group.items[0].quantity} unit`
+                          : ""}
+                      </h3>
                     )}
-                  >
-                    {formatDate(r.return_deadline)}
-                    {isOverdue(r.return_deadline) &&
-                      r.status !== "returned" && (
-                        <span className="ml-1 text-[10px]">⚠️ Terlambat</span>
+
+                    {/* Peminjam */}
+                    {role !== "student" && (
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {group.requester_name}
+                        {group.nim_nip && (
+                          <span className="font-mono ml-1">
+                            · {group.nim_nip}
+                          </span>
+                        )}
+                      </p>
+                    )}
+
+                    {/* Tanggal */}
+                    <p
+                      className={cn(
+                        "mt-1 text-xs",
+                        late
+                          ? "text-destructive font-medium"
+                          : "text-muted-foreground",
                       )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={mapStatus(r.status)} />
-                  </td>
+                    >
+                      Pinjam {formatDate(group.borrow_date)} → Tenggat{" "}
+                      {formatDate(group.return_deadline)}
+                    </p>
+                  </div>
+
+                  {/* Aksi admin */}
                   {role === "admin" && (
-                    <td className="px-4 py-3">
-                      <Button
-                        size="sm"
-                        variant="brand"
-                        onClick={() => openDialog(r)}
-                      >
-                        <CheckCircle className="size-3.5" />
-                        Proses
-                      </Button>
-                    </td>
+                    <Button
+                      size="sm"
+                      variant="brand"
+                      onClick={() => openGroupDialog(group)}
+                    >
+                      <CheckCircle className="size-3.5 mr-1" />
+                      Proses{isMulti ? ` (${group.items.length})` : ""}
+                    </Button>
                   )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
       {/* ── Dialog (Admin Only) ── */}
       {role === "admin" && (
         <Dialog
-          open={!!selectedLoan}
-          onOpenChange={() => setSelectedLoan(null)}
+          open={!!selectedGroup}
+          onOpenChange={() => setSelectedGroup(null)}
         >
-          <DialogContent className="max-w-lg">
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Proses Pengembalian Aset</DialogTitle>
               <DialogDescription>
@@ -328,7 +421,7 @@ function Pengembalian() {
               </DialogDescription>
             </DialogHeader>
 
-            {selectedLoan && (
+            {selectedGroup && (
               <div className="space-y-4">
                 {/* Info Peminjam */}
                 <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
@@ -336,98 +429,105 @@ function Pengembalian() {
                     Detail Peminjaman
                   </p>
                   <p className="font-medium">
-                    {selectedLoan.requester_name}
-                    {selectedLoan.nim_nip && (
+                    {selectedGroup.requester_name}
+                    {selectedGroup.nim_nip && (
                       <span className="ml-2 font-mono text-xs text-muted-foreground">
-                        · {selectedLoan.nim_nip}
+                        · {selectedGroup.nim_nip}
                       </span>
                     )}
                   </p>
-                  <p className="text-sm">
-                    <span className="text-muted-foreground">Aset:</span>{" "}
-                    {getAssetLabel(selectedLoan)}
-                  </p>
-                  <p className="text-sm">
-                    <span className="text-muted-foreground">Tenggat:</span>{" "}
+                  <p className="text-sm text-muted-foreground">
+                    Pinjam {formatDate(selectedGroup.borrow_date)} → Tenggat{" "}
                     <span
-                      className={cn(
-                        isOverdue(selectedLoan.return_deadline)
+                      className={
+                        isOverdue(selectedGroup.return_deadline)
                           ? "text-destructive font-medium"
-                          : "",
-                      )}
+                          : ""
+                      }
                     >
-                      {formatDate(selectedLoan.return_deadline)}
-                      {isOverdue(selectedLoan.return_deadline) &&
+                      {formatDate(selectedGroup.return_deadline)}
+                      {isOverdue(selectedGroup.return_deadline) &&
                         " ⚠️ Terlambat"}
                     </span>
                   </p>
-                  {selectedLoan.notes && selectedLoan.notes !== "—" && (
-                    <p className="text-sm">
-                      <span className="text-muted-foreground">Keterangan:</span>{" "}
-                      {selectedLoan.notes}
-                    </p>
-                  )}
                 </div>
 
-                {/* Kondisi Unit */}
-                <div className="space-y-2">
+                {/* Kondisi Unit per Aset */}
+                <div className="space-y-3">
                   <p className="text-xs font-semibold text-muted-foreground uppercase">
                     Verifikasi Kondisi Barang
                   </p>
                   {loadingUnits ? (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="size-4 animate-spin" />
-                      Memuat data unit…
+                      <Loader2 className="size-4 animate-spin" /> Memuat data
+                      unit…
                     </div>
-                  ) : units.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      Tidak ada detail unit tersedia.
-                    </p>
                   ) : (
-                    <div className="space-y-2">
-                      {units.map((u) => (
-                        <div
-                          key={u.id}
-                          className="flex items-center gap-3 rounded-md border p-2.5"
-                        >
-                          <Package className="size-4 shrink-0 text-muted-foreground" />
-                          <div className="flex-1">
-                            <p className="font-mono text-xs font-medium">
-                              {u.unit_code}
+                    selectedGroup.items.map((loan) => {
+                      const units = groupUnits[loan.id] ?? [];
+                      return (
+                        <div key={loan.id} className="space-y-2">
+                          {/* Header aset */}
+                          <p className="text-sm font-semibold flex items-center gap-1.5">
+                            <Package className="size-3.5 text-muted-foreground" />
+                            {getMerkLabel(loan)}
+                            {loan.quantity ? ` × ${loan.quantity} unit` : ""}
+                          </p>
+                          {/* Units */}
+                          {units.length === 0 ? (
+                            <p className="ml-5 text-xs text-muted-foreground">
+                              Tidak ada detail unit.
                             </p>
-                            <p className="text-[10px] text-muted-foreground">
-                              Kondisi sebelumnya: {u.condition}
-                            </p>
-                          </div>
-                          <Select
-                            value={unitConditions[u.id] ?? "good"}
-                            onValueChange={(v) =>
-                              setUnitConditions((prev) => ({
-                                ...prev,
-                                [u.id]: v,
-                              }))
-                            }
-                          >
-                            <SelectTrigger className="w-40 h-8 text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="good">✅ Baik</SelectItem>
-                              <SelectItem value="minor">
-                                ⚠️ Rusak Ringan
-                              </SelectItem>
-                              <SelectItem value="major">
-                                ❌ Rusak Berat
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
+                          ) : (
+                            <div className="ml-5 space-y-2">
+                              {units.map((u) => (
+                                <div
+                                  key={u.id}
+                                  className="flex items-center gap-3 rounded-md border p-2.5"
+                                >
+                                  <div className="flex-1">
+                                    <p className="font-mono text-xs font-medium">
+                                      {u.unit_code}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      Kondisi sebelumnya: {u.condition}
+                                    </p>
+                                  </div>
+                                  <Select
+                                    value={unitConditions[u.id] ?? "good"}
+                                    onValueChange={(v) =>
+                                      setUnitConditions((prev) => ({
+                                        ...prev,
+                                        [u.id]: v,
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger className="w-40 h-8 text-xs">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="good">
+                                        ✅ Baik
+                                      </SelectItem>
+                                      <SelectItem value="minor">
+                                        ⚠️ Rusak Ringan
+                                      </SelectItem>
+                                      <SelectItem value="major">
+                                        ❌ Rusak Berat
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      ))}
-                    </div>
+                      );
+                    })
                   )}
                 </div>
 
-                {/* Catatan Admin */}
+                {/* Catatan */}
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold text-muted-foreground uppercase">
                     Catatan Pengembalian (opsional)
@@ -454,22 +554,25 @@ function Pengembalian() {
             <DialogFooter>
               <Button
                 variant="ghost"
-                onClick={() => setSelectedLoan(null)}
+                onClick={() => setSelectedGroup(null)}
                 disabled={submitting}
               >
                 Batal
               </Button>
               <Button
                 variant="brand"
-                onClick={confirmReturn}
+                onClick={confirmGroupReturn}
                 disabled={submitting || loadingUnits}
               >
                 {submitting ? (
                   <Loader2 className="size-4 animate-spin" />
                 ) : (
                   <>
-                    <CheckCircle className="size-4" />
+                    <CheckCircle className="size-4 mr-1" />
                     Konfirmasi Selesai
+                    {(selectedGroup?.items.length ?? 0) > 1
+                      ? ` (${selectedGroup?.items.length} aset)`
+                      : ""}
                   </>
                 )}
               </Button>

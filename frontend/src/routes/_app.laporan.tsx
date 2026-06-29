@@ -98,6 +98,7 @@ function Laporan() {
           notes: r.notes ?? "—",
           asset_name: r.asset_name ?? "—",
           borrow_date: r.borrow_date,
+
           return_deadline: r.return_deadline,
           returned_at: r.returned_at ?? null, // ← tambah ini
           category: r.category ?? "",

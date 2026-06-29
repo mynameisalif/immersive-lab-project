@@ -1,7 +1,25 @@
+// ================================================================
+// jobs/cron.js — UPDATED
+//
+// PERUBAHAN dari versi sebelumnya:
+//   🔧 FIX 1: H-1 reminder tidak lagi increment warning_count
+//   🔧 FIX 2: Overdue cron sekarang kirim notif W1
+//   🔧 FIX 3: Link notif diperbaiki → /pinjaman
+//   ➕ BARU:  Warning 2 (H+3 setelah W1)
+//   ➕ BARU:  Auto-lock (H+3 setelah W2)
+//
+// FLOW warning_count:
+//   0 = belum ada warning (baru overdue)
+//   1 = W1 sudah dikirim
+//   2 = W2 sudah dikirim
+//   3 = sudah di-lock (stop processing)
+// ================================================================
+
 const cron = require("node-cron");
 const pool = require("../config/db");
 
 // ─── Setiap 30 menit: auto-lock akun gagal login ≥5x ─────────
+// (tidak berubah)
 cron.schedule("*/30 * * * *", async () => {
   try {
     const { rows } = await pool.query(
@@ -34,28 +52,63 @@ cron.schedule("*/30 * * * *", async () => {
         [user.id],
       );
     }
-    console.log(`[CRON] Auto-lock: ${rows.length} akun dikunci`);
+    console.log(`[CRON] Auto-lock login: ${rows.length} akun dikunci`);
   } catch (err) {
     console.error("[CRON] Auto-lock error:", err.message);
   }
 });
 
-// ─── Setiap jam: tandai peminjaman yang melewati deadline ─────
+// ─── Setiap jam: tandai overdue + kirim notif W1 ─────────────
+// 🔧 FIX: Sekarang juga kirim W1 notification untuk yang baru overdue
 cron.schedule("0 * * * *", async () => {
   try {
-    const { rowCount } = await pool.query(
-      `UPDATE loan_requests SET status='overdue', updated_at=NOW()
-       WHERE status = 'picked_up'
-         AND return_deadline < CURRENT_DATE`,
+    // Ambil loan yang BARU melewati deadline (belum pernah dapat warning)
+    const { rows: newOverdue } = await pool.query(
+      `SELECT lr.id, lr.requester_id, a.name AS asset_name
+       FROM loan_requests lr
+       JOIN assets a ON a.id = lr.asset_id
+       WHERE lr.status = 'picked_up'
+         AND lr.return_deadline < CURRENT_DATE
+         AND lr.warning_count = 0`,
     );
-    if (rowCount > 0)
-      console.log(`[CRON] Overdue: ${rowCount} peminjaman ditandai overdue`);
+
+    for (const loan of newOverdue) {
+      // Mark overdue + set W1
+      await pool.query(
+        `UPDATE loan_requests
+         SET status = 'overdue',
+             warning_count = 1,
+             last_warning_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1`,
+        [loan.id],
+      );
+
+      // ✅ Kirim notif W1 ke peminjam
+      await pool.query(
+        `INSERT INTO notifications (user_id, type, title, message, link)
+         VALUES ($1, 'loan_overdue',
+           '⚠️ Peringatan: Barang Terlambat Dikembalikan',
+           $2, '/pinjaman')`,
+        [
+          loan.requester_id,
+          `"${loan.asset_name}" sudah melewati batas pengembalian! Segera kembalikan ke admin lab sebelum dikenakan sanksi.`,
+        ],
+      );
+    }
+
+    if (newOverdue.length > 0)
+      console.log(
+        `[CRON] Overdue W1: ${newOverdue.length} peminjaman → overdue + notif dikirim`,
+      );
   } catch (err) {
     console.error("[CRON] Overdue error:", err.message);
   }
 });
 
-// ─── Setiap hari jam 08:00: kirim reminder H-1 sebelum deadline ─
+// ─── Setiap hari jam 08:00: reminder H-1 ─────────────────────
+// 🔧 FIX 1: Hapus warning_count++ (reminder ≠ warning)
+// 🔧 FIX 2: Link diperbaiki → /pinjaman
 cron.schedule("0 8 * * *", async () => {
   try {
     const { rows } = await pool.query(
@@ -68,33 +121,148 @@ cron.schedule("0 8 * * *", async () => {
     );
 
     for (const loan of rows) {
+      // ✅ FIX: link ke /pinjaman, bukan /loans/:id
       await pool.query(
         `INSERT INTO notifications (user_id, type, title, message, link)
-         VALUES ($1,'loan_reminder',
-           'Pengingat Pengembalian Aset',
-           $2, $3)`,
+         VALUES ($1, 'loan_return_reminder',
+           '⏰ Pengingat: Besok Batas Pengembalian',
+           $2, '/pinjaman')`,
         [
           loan.requester_id,
-          `Aset "${loan.asset_name}" harus dikembalikan besok (${loan.return_deadline}).`,
-          `/loans/${loan.id}`,
+          `"${loan.asset_name}" harus dikembalikan besok (${loan.return_deadline}). Harap kembalikan tepat waktu!`,
         ],
       );
+
+      // ✅ FIX: hanya set reminder_sent, TIDAK increment warning_count
       await pool.query(
-        `UPDATE loan_requests SET
-           reminder_sent=TRUE, warning_count=warning_count+1,
-           last_warning_at=NOW()
-         WHERE id=$1`,
+        `UPDATE loan_requests
+         SET reminder_sent = TRUE,
+             updated_at = NOW()
+         WHERE id = $1`,
         [loan.id],
       );
     }
+
     if (rows.length > 0)
-      console.log(`[CRON] Reminder: ${rows.length} notifikasi H-1 dikirim`);
+      console.log(`[CRON] Reminder H-1: ${rows.length} notifikasi dikirim`);
   } catch (err) {
     console.error("[CRON] Reminder error:", err.message);
   }
 });
 
-// ─── Setiap malam jam 00:05: auto-unlock akun jika unlock_at sudah lewat ─
+// ─── Setiap hari jam 08:30: Peringatan Kedua (W2) ────────────
+// ➕ BARU: 3 hari setelah W1 → kirim W2
+cron.schedule("30 8 * * *", async () => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT lr.id, lr.requester_id, a.name AS asset_name
+       FROM loan_requests lr
+       JOIN assets a ON a.id = lr.asset_id
+       WHERE lr.status = 'overdue'
+         AND lr.warning_count = 1
+         AND lr.last_warning_at::date <= CURRENT_DATE - INTERVAL '3 days'`,
+    );
+
+    for (const loan of rows) {
+      await pool.query(
+        `INSERT INTO notifications (user_id, type, title, message, link)
+         VALUES ($1, 'loan_overdue',
+           '🚨 Peringatan Kedua: Segera Kembalikan',
+           $2, '/pinjaman')`,
+        [
+          loan.requester_id,
+          `Ini adalah peringatan TERAKHIR untuk "${loan.asset_name}". Jika tidak dikembalikan dalam 3 hari, akun Anda akan dikunci otomatis.`,
+        ],
+      );
+
+      await pool.query(
+        `UPDATE loan_requests
+         SET warning_count = 2,
+             last_warning_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1`,
+        [loan.id],
+      );
+    }
+
+    if (rows.length > 0)
+      console.log(`[CRON] Warning W2: ${rows.length} peringatan kedua dikirim`);
+  } catch (err) {
+    console.error("[CRON] Warning W2 error:", err.message);
+  }
+});
+
+// ─── Setiap hari jam 09:00: Auto-lock setelah W2 ─────────────
+// ➕ BARU: 3 hari setelah W2 → lock akun
+cron.schedule("0 9 * * *", async () => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT lr.id, lr.requester_id, a.name AS asset_name
+       FROM loan_requests lr
+       JOIN assets a ON a.id = lr.asset_id
+       WHERE lr.status = 'overdue'
+         AND lr.warning_count = 2
+         AND lr.last_warning_at::date <= CURRENT_DATE - INTERVAL '3 days'`,
+    );
+
+    for (const loan of rows) {
+      // Lock akun user
+      await pool.query(
+        `UPDATE profiles
+         SET is_blocked = TRUE,
+             auto_locked = TRUE,
+             blocked_reason = $2,
+             blocked_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1`,
+        [
+          loan.requester_id,
+          `Akun dikunci otomatis karena terlambat mengembalikan "${loan.asset_name}". Selesaikan peminjaman untuk membuka akses.`,
+        ],
+      );
+
+      // Catat di account_lock_log
+      await pool.query(
+        `INSERT INTO account_lock_log
+           (user_id, action, trigger_type, reason)
+         VALUES ($1, 'lock', 'overdue_return', $2)`,
+        [
+          loan.requester_id,
+          `Auto-lock: terlambat mengembalikan "${loan.asset_name}" (loan: ${loan.id})`,
+        ],
+      );
+
+      // Notif ke user
+      await pool.query(
+        `INSERT INTO notifications (user_id, type, title, message, link)
+         VALUES ($1, 'account_locked',
+           '🔒 Akun Dikunci Otomatis',
+           $2, '/pesan')`,
+        [
+          loan.requester_id,
+          `Akun Anda dikunci karena belum mengembalikan "${loan.asset_name}". Hubungi admin lab untuk membuka akses.`,
+        ],
+      );
+
+      // Set warning_count = 3 supaya tidak diproses lagi
+      await pool.query(
+        `UPDATE loan_requests
+         SET warning_count = 3,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [loan.id],
+      );
+    }
+
+    if (rows.length > 0)
+      console.log(`[CRON] Auto-lock overdue: ${rows.length} akun dikunci`);
+  } catch (err) {
+    console.error("[CRON] Auto-lock overdue error:", err.message);
+  }
+});
+
+// ─── Setiap malam jam 00:05: auto-unlock berdasarkan unlock_at ─
+// (tidak berubah)
 cron.schedule("5 0 * * *", async () => {
   try {
     const { rows } = await pool.query(
@@ -127,6 +295,7 @@ cron.schedule("5 0 * * *", async () => {
         [user.id],
       );
     }
+
     if (rows.length > 0)
       console.log(`[CRON] Auto-unlock: ${rows.length} akun dibuka`);
   } catch (err) {
