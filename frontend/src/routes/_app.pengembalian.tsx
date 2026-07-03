@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 import { ArrowLeftRight, CheckCircle, Loader2, Package } from "lucide-react";
 import { EmptyState } from "@/components/common/EmptyState";
-import { getLoans } from "@/services/loan.service";
+import { Pagination } from "@/components/common/Pagination";
 import api from "@/lib/api";
 import {
   Dialog,
@@ -27,7 +27,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-
+import { getReturnPending } from "@/services/loan.service";
 export const Route = createFileRoute("/_app/pengembalian")({
   component: Pengembalian,
   head: () => ({ meta: [{ title: "Pengembalian · MNP Lab Loan" }] }),
@@ -48,8 +48,8 @@ interface Row {
   requester_id?: string;
   nim_nip?: string | null;
   quantity?: number;
-  created_at: string; // ✅ untuk grouping
-  category?: string; // ✅ untuk grouping
+  created_at: string;
+  category?: string;
 }
 
 interface RowGroup {
@@ -70,8 +70,15 @@ interface UnitDetail {
   loan_status: string;
 }
 
+interface PaginationData {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 // ── Helpers ───────────────────────────────────────────────────
-const GROUP_WINDOW_MS = 10_000; // FIX: 10 detik
+const GROUP_WINDOW_MS = 10_000;
 
 function groupRows(items: Row[]): RowGroup[] {
   const sorted = [...items].sort(
@@ -137,6 +144,16 @@ function Pengembalian() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // ✅ TAMBAH: Pagination state
+  const LIMIT = 10;
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationData>({
+    total: 0,
+    page: 1,
+    limit: LIMIT,
+    totalPages: 0,
+  });
+
   // Dialog state
   const [selectedGroup, setSelectedGroup] = useState<RowGroup | null>(null);
   const [groupUnits, setGroupUnits] = useState<Record<string, UnitDetail[]>>(
@@ -149,17 +166,31 @@ function Pengembalian() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingUnits, setLoadingUnits] = useState(false);
 
-  const load = async () => {
+  // ✅ UPDATE: Load function dengan endpoint baru + pagination
+  const load = async (currentPage = page) => {
     try {
       setLoading(true);
-      const res = await getLoans();
+
+      let res;
+      if (role === "admin") {
+        // ✅ FIX: Admin call endpoint baru /api/loans/return/pending dengan pagination
+        res = await getReturnPending({
+          page: currentPage,
+          limit: LIMIT,
+        });
+      } else {
+        // Student/dosen call getLoans dengan filter client-side (sudah ada logic)
+        res = await api.get("/api/loans");
+      }
+
       const data = res.data?.data ?? [];
 
-      // ✅ FIX: hanya picked_up dan overdue (hapus approved_admin!)
+      // ✅ FIX: hanya picked_up dan overdue
       let filtered: Row[] = data.filter((r: any) =>
         ["picked_up", "overdue"].includes(r.status),
       );
 
+      // Student filter: hanya loans milik mereka
       if (role === "student") {
         filtered = filtered.filter((r: any) => r.requester_id === user?.id);
       }
@@ -189,16 +220,49 @@ function Pengembalian() {
         );
 
       setRows(mapped);
+
+      // ✅ FIX: Set pagination hanya untuk admin (dari endpoint baru)
+      if (role === "admin") {
+        setPagination(
+          res.data?.pagination ?? {
+            total: 0,
+            page: 1,
+            limit: LIMIT,
+            totalPages: 0,
+          },
+        );
+        setPage(currentPage);
+      } else {
+        // Student/dosen: client-side pagination (jika perlu bisa ditambah)
+        setPagination({
+          total: filtered.length,
+          page: 1,
+          limit: LIMIT,
+          totalPages: 1,
+        });
+      }
     } catch {
       setRows([]);
+      setPagination({
+        total: 0,
+        page: 1,
+        limit: LIMIT,
+        totalPages: 0,
+      });
     } finally {
       setLoading(false);
     }
   };
 
+  // ✅ FIX: useEffect trigger saat page berubah (admin only)
   useEffect(() => {
-    void load();
-  }, [user, role]);
+    void load(page);
+  }, [user, role, page]);
+
+  // ✅ TAMBAH: Handler pagination
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
 
   // ✅ Buka dialog untuk group — fetch units semua loan dalam group
   const openGroupDialog = async (group: RowGroup) => {
@@ -267,7 +331,8 @@ function Pengembalian() {
           : "Pengembalian berhasil dikonfirmasi! Stok otomatis diupdate.",
       );
       setSelectedGroup(null);
-      void load();
+      // ✅ FIX: Reload dengan halaman saat ini
+      await load(page);
     }
   };
 
@@ -308,103 +373,121 @@ function Pengembalian() {
           />
         </div>
       ) : (
-        <div className="mt-6 space-y-3">
-          {groups.map((group) => {
-            const isMulti = group.items.length > 1;
-            const late = isOverdue(group.return_deadline);
+        <>
+          <div className="mt-6 space-y-3">
+            {groups.map((group) => {
+              const isMulti = group.items.length > 1;
+              const late = isOverdue(group.return_deadline);
 
-            return (
-              <div
-                key={group.groupKey}
-                className="rounded-xl border bg-card p-5 shadow-(--shadow-card)"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    {/* ID & Status */}
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {group.groupKey.slice(0, 8)}
-                      </span>
-                      <StatusBadge status={mapStatus(group.items[0].status)} />
-                      {late && (
-                        <span className="text-xs font-medium text-destructive">
-                          ⚠️ Terlambat
+              return (
+                <div
+                  key={group.groupKey}
+                  className="rounded-xl border bg-card p-5 shadow-(--shadow-card)"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      {/* ID & Status */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {group.groupKey.slice(0, 8)}
                         </span>
-                      )}
-                    </div>
-
-                    {/* Aset list */}
-                    {isMulti ? (
-                      <div className="mt-2">
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <Package className="size-3.5 text-muted-foreground" />
-                          <span className="text-xs text-muted-foreground font-medium">
-                            {group.items.length} aset dalam satu pengajuan:
-                          </span>
-                        </div>
-                        <ul className="ml-5 space-y-0.5">
-                          {group.items.map((item) => (
-                            <li
-                              key={item.id}
-                              className="font-display font-semibold text-sm"
-                            >
-                              • {getMerkLabel(item)}
-                              {item.quantity ? ` × ${item.quantity} unit` : ""}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : (
-                      <h3 className="mt-1 font-display font-semibold">
-                        {getMerkLabel(group.items[0])}
-                        {group.items[0].quantity
-                          ? ` × ${group.items[0].quantity} unit`
-                          : ""}
-                      </h3>
-                    )}
-
-                    {/* Peminjam */}
-                    {role !== "student" && (
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        {group.requester_name}
-                        {group.nim_nip && (
-                          <span className="font-mono ml-1">
-                            · {group.nim_nip}
+                        <StatusBadge
+                          status={mapStatus(group.items[0].status)}
+                        />
+                        {late && (
+                          <span className="text-xs font-medium text-destructive">
+                            ⚠️ Terlambat
                           </span>
                         )}
-                      </p>
-                    )}
+                      </div>
 
-                    {/* Tanggal */}
-                    <p
-                      className={cn(
-                        "mt-1 text-xs",
-                        late
-                          ? "text-destructive font-medium"
-                          : "text-muted-foreground",
+                      {/* Aset list */}
+                      {isMulti ? (
+                        <div className="mt-2">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <Package className="size-3.5 text-muted-foreground" />
+                            <span className="text-xs text-muted-foreground font-medium">
+                              {group.items.length} aset dalam satu pengajuan:
+                            </span>
+                          </div>
+                          <ul className="ml-5 space-y-0.5">
+                            {group.items.map((item) => (
+                              <li
+                                key={item.id}
+                                className="font-display font-semibold text-sm"
+                              >
+                                • {getMerkLabel(item)}
+                                {item.quantity
+                                  ? ` × ${item.quantity} unit`
+                                  : ""}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <h3 className="mt-1 font-display font-semibold">
+                          {getMerkLabel(group.items[0])}
+                          {group.items[0].quantity
+                            ? ` × ${group.items[0].quantity} unit`
+                            : ""}
+                        </h3>
                       )}
-                    >
-                      Pinjam {formatDate(group.borrow_date)} → Tenggat{" "}
-                      {formatDate(group.return_deadline)}
-                    </p>
-                  </div>
 
-                  {/* Aksi admin */}
-                  {role === "admin" && (
-                    <Button
-                      size="sm"
-                      variant="brand"
-                      onClick={() => openGroupDialog(group)}
-                    >
-                      <CheckCircle className="size-3.5 mr-1" />
-                      Proses{isMulti ? ` (${group.items.length})` : ""}
-                    </Button>
-                  )}
+                      {/* Peminjam */}
+                      {role !== "student" && (
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {group.requester_name}
+                          {group.nim_nip && (
+                            <span className="font-mono ml-1">
+                              · {group.nim_nip}
+                            </span>
+                          )}
+                        </p>
+                      )}
+
+                      {/* Tanggal */}
+                      <p
+                        className={cn(
+                          "mt-1 text-xs",
+                          late
+                            ? "text-destructive font-medium"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        Pinjam {formatDate(group.borrow_date)} → Tenggat{" "}
+                        {formatDate(group.return_deadline)}
+                      </p>
+                    </div>
+
+                    {/* Aksi admin */}
+                    {role === "admin" && (
+                      <Button
+                        size="sm"
+                        variant="brand"
+                        onClick={() => openGroupDialog(group)}
+                      >
+                        <CheckCircle className="size-3.5 mr-1" />
+                        Proses{isMulti ? ` (${group.items.length})` : ""}
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+
+          {/* ✅ TAMBAH: Pagination Component (admin only) */}
+          {role === "admin" && (
+            <Pagination
+              page={pagination.page}
+              totalPages={pagination.totalPages}
+              total={pagination.total}
+              limit={pagination.limit}
+              onPageChange={handlePageChange}
+              loading={loading}
+            />
+          )}
+        </>
       )}
 
       {/* ── Dialog (Admin Only) ── */}

@@ -4,6 +4,7 @@ import { PageHeader } from "../components/common/PageHeader";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Pagination } from "../components/common/Pagination";
 import { Mail, Search, Trash2, Eye, Loader2 } from "lucide-react";
 import { EmptyState } from "../components/common/EmptyState";
 import api from "../lib/api";
@@ -25,6 +26,13 @@ interface Notification {
   created_at: string;
 }
 
+interface PaginationData {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 // ── Group notifikasi yang dikirim bersamaan ───────────────────
 interface NotifGroup {
   groupKey: string;
@@ -36,7 +44,7 @@ interface NotifGroup {
   items: Notification[];
 }
 
-const GROUP_WINDOW_MS = 10_000; // FIX: 10 detik
+const GROUP_WINDOW_MS = 10_000; // 10 detik
 
 function groupNotifications(items: Notification[]): NotifGroup[] {
   const sorted = [...items].sort(
@@ -79,17 +87,42 @@ function Pesan() {
   const [marking, setMarking] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const loadNotifications = async () => {
+  // ✅ Pagination state
+  const LIMIT = 20;
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationData>({
+    total: 0,
+    page: 1,
+    limit: LIMIT,
+    totalPages: 0,
+  });
+
+  const loadNotifications = async (currentPage = page) => {
     try {
       setLoading(true);
-      const res = await api.get("/api/notifications");
+      const res = await api.get("/api/notifications", {
+        params: { page: currentPage, limit: LIMIT },
+      });
       setNotifications(res.data?.data ?? []);
+      setPagination(
+        res.data?.pagination ?? {
+          total: 0,
+          page: 1,
+          limit: LIMIT,
+          totalPages: 0,
+        },
+      );
+      setPage(currentPage);
     } catch {
       toast.error("Gagal memuat pesan");
       setNotifications([]);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
   };
 
   // ✅ Mark semua notifikasi dalam group sebagai dibaca
@@ -125,9 +158,8 @@ function Pesan() {
       for (const notif of group.items) {
         await api.delete(`/api/notifications/${notif.id}`);
       }
-      setNotifications((prev) =>
-        prev.filter((n) => !group.items.find((i) => i.id === n.id)),
-      );
+      // ✅ Reload halaman saat ini setelah delete (karena total berubah)
+      await loadNotifications(page);
       toast.success(
         group.items.length > 1
           ? `${group.items.length} pesan dihapus`
@@ -156,10 +188,11 @@ function Pesan() {
   };
 
   useEffect(() => {
-    void loadNotifications();
-    const interval = setInterval(() => void loadNotifications(), 5000);
+    void loadNotifications(page);
+    // ✅ Auto-refresh halaman yang sedang aktif setiap 5 detik
+    const interval = setInterval(() => void loadNotifications(page), 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [page]);
 
   const allGroups = groupNotifications(notifications);
 
@@ -219,7 +252,7 @@ function Pesan() {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Cari pesan..."
+          placeholder="Cari pesan (di halaman ini)..."
           className="pl-9"
         />
       </div>
@@ -350,6 +383,18 @@ function Pesan() {
             );
           })}
         </div>
+      )}
+
+      {/* ✅ Pagination */}
+      {notifications.length > 0 && (
+        <Pagination
+          page={pagination.page}
+          totalPages={pagination.totalPages}
+          total={pagination.total}
+          limit={pagination.limit}
+          onPageChange={handlePageChange}
+          loading={loading}
+        />
       )}
 
       {notifications.length > 0 && (

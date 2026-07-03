@@ -11,7 +11,7 @@ module.exports = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const { rows } = await pool.query(
-      "SELECT id, is_blocked, blocked_reason, auto_locked FROM profiles WHERE id = $1",
+      "SELECT id, is_blocked, blocked_reason, auto_locked, is_kaprodi FROM profiles WHERE id = $1",
       [decoded.userId],
     );
 
@@ -25,7 +25,11 @@ module.exports = async (req, res, next) => {
           : `Akun diblokir: ${rows[0].blocked_reason}`,
       });
 
-    req.user = { ...decoded, id: decoded.userId };
+    req.user = {
+      ...decoded,
+      id: decoded.userId,
+      isKaprodi: rows[0].is_kaprodi === true,
+    };
     next();
   } catch (err) {
     return res

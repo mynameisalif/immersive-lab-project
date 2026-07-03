@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/common/PageHeader";
+import { Pagination } from "../components/common/Pagination";
 import { Button } from "../components/ui/button";
 import { StatusBadge, type LoanStatus } from "../components/common/StatusBadge";
 import { useAuth } from "../lib/auth";
@@ -187,11 +188,21 @@ function ApprovalPage() {
       return "Approve atau tolak request peminjaman dari mahasiswa.";
     return "";
   };
-
-  const load = async () => {
+  const LIMIT = 10;
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({
+    total: 0,
+    page: 1,
+    limit: LIMIT,
+    totalPages: 0,
+  });
+  const load = async (currentPage = page) => {
     if (!canAccess) return;
     try {
-      const res = await getPendingApprovals();
+      const res = await getPendingApprovals({
+        page: currentPage,
+        limit: LIMIT,
+      });
       const data = res.data?.data ?? [];
       const list: Item[] = data.map((r: any) => ({
         id: r.id,
@@ -213,14 +224,34 @@ function ApprovalPage() {
         attachment_name: r.attachment_name ?? null,
       }));
       setRows(list);
+      setPagination(
+        res.data?.pagination ?? {
+          total: 0,
+          page: 1,
+          limit: LIMIT,
+          totalPages: 0,
+        },
+      );
+      setPage(currentPage);
     } catch {
       setRows([]);
+      setPagination({
+        total: 0,
+        page: 1,
+        limit: LIMIT,
+        totalPages: 0,
+      });
+      setPage(1);
     }
   };
 
   useEffect(() => {
-    void load();
-  }, [role, isKaprodi]);
+    void load(page);
+  }, [role, isKaprodi, page]);
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
 
   // ✅ Approve SEMUA loan dalam satu group
   const approveGroup = async (group: LoanGroup) => {
@@ -293,18 +324,28 @@ function ApprovalPage() {
           />
         </div>
       ) : (
-        <div className="mt-6 space-y-3">
-          {groups.map((group) => (
-            <GroupCard
-              key={group.groupKey}
-              group={group}
-              loading={loading}
-              isKaprodi={!!isKaprodi}
-              onApprove={() => approveGroup(group)}
-              onReject={(reason) => rejectGroup(group, reason)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="mt-6 space-y-3">
+            {groups.map((group) => (
+              <GroupCard
+                key={group.groupKey}
+                group={group}
+                loading={loading}
+                isKaprodi={!!isKaprodi}
+                onApprove={() => approveGroup(group)}
+                onReject={(reason) => rejectGroup(group, reason)}
+              />
+            ))}
+          </div>
+          <Pagination
+            page={pagination.page}
+            totalPages={pagination.totalPages}
+            total={pagination.total}
+            limit={pagination.limit}
+            onPageChange={handlePageChange}
+            loading={loading}
+          />
+        </>
       )}
     </>
   );

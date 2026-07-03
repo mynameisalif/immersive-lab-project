@@ -47,8 +47,16 @@ async function notifyAllAdmins(client, type, title, message, link) {
 // ─── GET pending requests ──────────────────────────────────────
 exports.getPending = async (req, res) => {
   const { role, userId } = req.user;
+
+  // ✅ FIX 1: Pagination params
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(50, parseInt(req.query.limit) || 10);
+  const offset = (page - 1) * limit;
+
   try {
-    let query;
+    let query,
+      countQuery,
+      params = [];
 
     if (role === "dosen") {
       const isKaprodi = await getIsKaprodi(userId);
@@ -56,6 +64,14 @@ exports.getPending = async (req, res) => {
         return res.status(403).json({ message: "Akses ditolak" });
       }
 
+      // ── COUNT query (kaprodi) ──
+      countQuery = `
+        SELECT COUNT(*) FROM loan_requests lr
+        JOIN user_roles ur ON ur.user_id = lr.requester_id
+        WHERE lr.status = 'pending'
+          AND ur.role = 'student'`;
+
+      // ── DATA query (kaprodi) + LIMIT/OFFSET ──
       query = `
         SELECT lr.*,
                a.name AS asset_name, a.merk, a.type,
@@ -67,8 +83,19 @@ exports.getPending = async (req, res) => {
         JOIN user_roles ur ON ur.user_id = p.id
         WHERE lr.status = 'pending'
           AND ur.role = 'student'
-        ORDER BY lr.created_at ASC`;
+        ORDER BY lr.created_at ASC
+        LIMIT $1 OFFSET $2`;
+
+      params = []; // No additional params for count, just LIMIT/OFFSET for data
     } else if (role === "admin") {
+      // ── COUNT query (admin) ──
+      countQuery = `
+        SELECT COUNT(*) FROM loan_requests lr
+        JOIN user_roles ur ON ur.user_id = lr.requester_id
+        WHERE (lr.status = 'approved_dosen'
+           OR (lr.status = 'pending' AND ur.role IN ('staff', 'dosen')))`;
+
+      // ── DATA query (admin) + LIMIT/OFFSET ──
       query = `
         SELECT lr.*,
                a.name AS asset_name, a.merk, a.type,
@@ -78,15 +105,33 @@ exports.getPending = async (req, res) => {
         JOIN assets a ON a.id = lr.asset_id
         JOIN profiles p ON p.id = lr.requester_id
         JOIN user_roles ur ON ur.user_id = p.id
-        WHERE lr.status = 'approved_dosen'
-           OR (lr.status = 'pending' AND ur.role IN ('staff', 'dosen'))
-        ORDER BY lr.created_at ASC`;
+        WHERE (lr.status = 'approved_dosen'
+           OR (lr.status = 'pending' AND ur.role IN ('staff', 'dosen')))
+        ORDER BY lr.created_at ASC
+        LIMIT $1 OFFSET $2`;
+
+      params = [];
     } else {
       return res.status(403).json({ message: "Akses ditolak" });
     }
 
-    const { rows } = await pool.query(query);
-    res.json({ data: rows });
+    // ✅ FIX 2: Count total
+    const countRes = await pool.query(countQuery, params);
+    const total = parseInt(countRes.rows[0].count);
+
+    // ✅ FIX 3: Execute dengan LIMIT & OFFSET
+    const { rows } = await pool.query(query, [...params, limit, offset]);
+
+    // ✅ FIX 4: Return dengan pagination metadata
+    res.json({
+      data: rows,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (err) {
     console.error("getPending error:", err);
     res.status(500).json({ message: "Terjadi kesalahan server" });

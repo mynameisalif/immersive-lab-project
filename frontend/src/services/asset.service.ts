@@ -19,7 +19,8 @@ export interface UnitPayload {
   notes?: string | null;
 }
 
-export const getAllAssets = () => api.get("/api/assets");
+export const getAllAssets = (params?: { page?: number; limit?: number }) =>
+  api.get("/api/assets", { params });
 
 export const getAvailableAssets = () => api.get("/api/assets/available");
 

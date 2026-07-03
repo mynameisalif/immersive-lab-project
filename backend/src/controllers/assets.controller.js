@@ -15,15 +15,74 @@ const VALID_ASSET_CATEGORIES = [
 
 exports.getAllAssets = async (req, res) => {
   try {
+    // ✅ Get pagination params
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit) || 10);
+    const offset = (page - 1) * limit;
+
+    // ✅ FIX 1: Get TOTAL count untuk pagination metadata
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*) as total FROM assets`,
+    );
+    const total = parseInt(countRows[0].total, 10);
+
+    // ✅ FIX 2: Query assets DENGAN pagination + include kode_aset
     const { rows: assets } = await pool.query(
-      `SELECT id, name, category, description, image_url, merk, type, no_pr, no_po, kelengkapan, created_at, updated_at
-       FROM assets ORDER BY created_at DESC`,
+      `SELECT 
+        id, 
+        name, 
+        category, 
+        description, 
+        image_url, 
+        merk, 
+        type, 
+        no_pr, 
+        no_po, 
+        kelengkapan,
+        kode_aset,
+        created_at, 
+        updated_at
+       FROM assets 
+       ORDER BY created_at DESC 
+       LIMIT $1 OFFSET $2`,
+      [limit, offset],
     );
-    const { rows: units } = await pool.query(
-      `SELECT id, asset_id, unit_code, serial_number, is_available, condition, loan_status, created_at, updated_at
-       FROM asset_units ORDER BY unit_code`,
-    );
-    res.json({ data: { assets, units } });
+
+    // ✅ FIX 3: Query units HANYA untuk assets yang muncul di halaman ini
+    const assetIds = assets.map((a) => a.id);
+
+    let units = [];
+    if (assetIds.length > 0) {
+      const placeholders = assetIds.map((_, i) => `$${i + 1}`).join(",");
+      const { rows: unitsRows } = await pool.query(
+        `SELECT 
+          id, 
+          asset_id, 
+          unit_code, 
+          serial_number, 
+          is_available, 
+          condition, 
+          loan_status, 
+          created_at, 
+          updated_at
+         FROM asset_units 
+         WHERE asset_id IN (${placeholders})
+         ORDER BY unit_code`,
+        assetIds,
+      );
+      units = unitsRows;
+    }
+
+    // ✅ FIX 4: Return response dengan pagination metadata
+    res.json({
+      data: { assets, units },
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (err) {
     console.error("[ERROR] getAllAssets error:", err.message);
     res.status(500).json({ message: "Server error", error: err.message });

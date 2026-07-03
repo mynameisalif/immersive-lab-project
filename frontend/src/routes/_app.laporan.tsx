@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/common/PageHeader";
 import { KpiCard } from "../components/common/KpiCard";
+import { Pagination } from "../components/common/Pagination";
 import {
   ClipboardList,
   AlertTriangle,
@@ -10,12 +11,20 @@ import {
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { StatusBadge, type LoanStatus } from "../components/common/StatusBadge";
-import { getLoans } from "../services/loan.service";
+import { getLoans, getAllLoansForReport } from "../services/loan.service";
 
 export const Route = createFileRoute("/_app/laporan")({
   component: Laporan,
   head: () => ({ meta: [{ title: "Laporan Peminjaman · MNP Lab Loan" }] }),
 });
+
+interface Asset {
+  id: string;
+  name: string;
+  merk?: string;
+  type?: string;
+  quantity: number;
+}
 
 interface Row {
   id: string;
@@ -26,6 +35,17 @@ interface Row {
   return_deadline: string;
   returned_at?: string | null;
   category: string;
+  requester_name?: string;
+  nim_nip?: string | null;
+  assets?: Asset[];
+  asset_count?: number;
+}
+
+interface PaginationData {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
 }
 
 const mapStatus = (s: string): LoanStatus => {
@@ -54,15 +74,11 @@ const getCategoryLabel = (cat: string) => {
   return cat;
 };
 
-// ✅ Cek apakah peminjaman terlambat:
-// 1. Status masih overdue (belum dikembalikan)
-// 2. Sudah returned tapi returned_at > return_deadline
 const isLate = (r: Row): boolean => {
   if (r.status === "overdue") return true;
   if (r.status === "returned" && r.returned_at && r.return_deadline) {
     return new Date(r.returned_at) > new Date(r.return_deadline);
   }
-  // Aktif dan sudah lewat deadline
   if (
     ["picked_up", "approved_admin", "approved_dosen"].includes(r.status) &&
     r.return_deadline
@@ -84,42 +100,74 @@ function Laporan() {
   const [rows, setRows] = useState<Row[]>([]);
   const [fetching, setFetching] = useState(false);
 
-  useEffect(() => {
-    if (!loading && role && role !== "admin" && role !== "dosen") return;
+  const LIMIT = 10;
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationData>({
+    total: 0,
+    page: 1,
+    limit: LIMIT,
+    totalPages: 0,
+  });
+
+  const load = async (currentPage = page) => {
     if (!role || (role !== "admin" && role !== "dosen")) return;
 
-    void (async () => {
-      try {
-        setFetching(true);
-        const res = await getLoans();
-        const data: Row[] = (res.data?.data ?? []).map((r: any) => ({
-          id: r.id,
-          status: r.status,
-          notes: r.notes ?? "—",
-          asset_name: r.asset_name ?? "—",
-          borrow_date: r.borrow_date,
+    try {
+      setFetching(true);
 
-          return_deadline: r.return_deadline,
-          returned_at: r.returned_at ?? null, // ← tambah ini
-          category: r.category ?? "",
-        }));
-
-        setRows(data);
-
-        setStats({
-          total: data.length,
-          selesai: data.filter((r) => r.status === "returned").length,
-          // ✅ Hitung terlambat dari tanggal, bukan hanya status overdue
-          terlambat: data.filter((r) => isLate(r)).length,
-          ditolak: data.filter((r) => r.status === "rejected").length,
-        });
-      } catch {
-        setRows([]);
-      } finally {
-        setFetching(false);
+      let res;
+      if (role === "admin") {
+        res = await getAllLoansForReport({ page: currentPage, limit: LIMIT });
+      } else {
+        res = await getLoans({ page: currentPage, limit: LIMIT });
       }
-    })();
-  }, [role, loading]);
+
+      const data: Row[] = (res.data?.data ?? []).map((r: any) => ({
+        id: r.id,
+        status: r.status,
+        notes: r.notes ?? "—",
+        asset_name: r.asset_name ?? "—",
+        borrow_date: r.borrow_date,
+        return_deadline: r.return_deadline,
+        returned_at: r.returned_at ?? null,
+        category: r.category ?? "",
+        requester_name: r.requester_name ?? "—",
+        nim_nip: r.nim_nip ?? null,
+        assets: Array.isArray(r.assets) ? r.assets : [],
+        asset_count: r.asset_count ?? 1,
+      }));
+
+      setRows(data);
+
+      const paginationData = res.data?.pagination ?? {
+        total: 0,
+        page: 1,
+        limit: LIMIT,
+        totalPages: 0,
+      };
+      setPagination(paginationData);
+      setPage(currentPage);
+
+      setStats({
+        total: paginationData.total,
+        selesai: data.filter((r) => r.status === "returned").length,
+        terlambat: data.filter((r) => isLate(r)).length,
+        ditolak: data.filter((r) => r.status === "rejected").length,
+      });
+    } catch (err) {
+      console.error("Error:", err);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  useEffect(() => {
+    void load(page);
+  }, [role, loading, page]);
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
 
   if (!loading && role && role !== "admin" && role !== "dosen") {
     return (
@@ -140,7 +188,6 @@ function Laporan() {
         }
       />
 
-      {/* KPI Cards */}
       <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard
           label="Total Peminjaman"
@@ -168,14 +215,19 @@ function Laporan() {
         />
       </div>
 
-      {/* Tabel */}
-      <div className="mt-8 overflow-x-auto rounded-xl border bg-card shadow-(--shadow-card)">
+      <div className="mt-8 overflow-x-auto rounded-xl border bg-card shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
             <tr>
               <th className="px-4 py-3">ID</th>
+              {(role === "admin" || role === "dosen") && (
+                <>
+                  <th className="px-4 py-3">Peminjam</th>
+                  <th className="px-4 py-3">NIM/NIP</th>
+                </>
+              )}
               <th className="px-4 py-3">Aset</th>
-              <th className="px-4 py-3">Keterangan</th>
+              <th className="px-4 py-3">Qty</th>
               <th className="px-4 py-3">Kategori</th>
               <th className="px-4 py-3">Pinjam</th>
               <th className="px-4 py-3">Kembali</th>
@@ -186,44 +238,63 @@ function Laporan() {
             {fetching ? (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={role === "admin" || role === "dosen" ? 9 : 7}
                   className="px-4 py-8 text-center text-muted-foreground"
                 >
-                  Memuat data…
+                  Memuat…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={role === "admin" || role === "dosen" ? 9 : 7}
                   className="px-4 py-8 text-center text-muted-foreground"
                 >
                   Belum ada data.
                 </td>
               </tr>
             ) : (
-              rows.map((r) => (
-                <tr key={r.id} className="hover:bg-muted/30">
+              rows.map((r, idx) => (
+                <tr key={idx} className="hover:bg-muted/30">
                   <td className="px-4 py-3 font-mono text-xs">
                     {r.id.slice(0, 8)}
                   </td>
-                  <td className="px-4 py-3 font-medium">{r.asset_name}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">
-                    {r.notes}
+                  {(role === "admin" || role === "dosen") && (
+                    <>
+                      <td className="px-4 py-3 font-medium">
+                        {r.requester_name}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs">
+                        {r.nim_nip ?? "—"}
+                      </td>
+                    </>
+                  )}
+                  <td className="px-4 py-3">
+                    {r.assets && r.assets.length > 1 ? (
+                      <ul className="list-inside list-disc space-y-0.5">
+                        {r.assets.map((asset) => (
+                          <li key={asset.id}>
+                            {asset.name}
+                            {asset.quantity > 1 ? ` (${asset.quantity})` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <span className="font-medium">{r.asset_name}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
+                      {r.asset_count ?? 1} aset
+                    </span>
                   </td>
                   <td className="px-4 py-3">{getCategoryLabel(r.category)}</td>
                   <td className="px-4 py-3">{formatDate(r.borrow_date)}</td>
                   <td className="px-4 py-3">
-                    <span
-                      className={
-                        isLate(r) ? "text-destructive font-medium" : ""
-                      }
-                    >
-                      {formatDate(r.return_deadline)}
-                      {isLate(r) && r.status === "returned" && (
-                        <span className="ml-1 text-[10px]">⚠️ Terlambat</span>
-                      )}
-                    </span>
+                    {formatDate(r.return_deadline)}
+                    {isLate(r) && r.status === "returned" && (
+                      <span className="ml-1 text-xs text-destructive">⚠️</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={mapStatus(r.status)} />
@@ -234,6 +305,15 @@ function Laporan() {
           </tbody>
         </table>
       </div>
+
+      <Pagination
+        page={pagination.page}
+        totalPages={pagination.totalPages}
+        total={pagination.total}
+        limit={pagination.limit}
+        onPageChange={handlePageChange}
+        loading={fetching}
+      />
     </>
   );
 }

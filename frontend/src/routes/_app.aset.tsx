@@ -1,7 +1,11 @@
+// ✅ UPDATED frontend/src/routes/_app.aset.tsx
+// Menggunakan Pagination.tsx component yang sudah ada
+
 import { createFileRoute } from "@tanstack/react-router";
 import { Fragment } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../components/common/PageHeader";
+import { Pagination } from "../components/common/Pagination";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -25,6 +29,7 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react";
+import { getAllAssets } from "../services/asset.service";
 import {
   Dialog,
   DialogContent,
@@ -62,6 +67,8 @@ const CATEGORY_OPTIONS = [
   "Others",
 ];
 
+// ✅ Konstanta untuk items per halaman
+
 export const Route = createFileRoute("/_app/aset")({
   component: ManajemenAset,
   head: () => ({ meta: [{ title: "Manajemen Aset · MNP Lab Loan" }] }),
@@ -91,6 +98,14 @@ interface Unit {
   loan_status: "tersedia" | "dipinjam" | "tidak_tersedia";
 }
 
+// ✅ Pagination state interface
+interface PaginationInfo {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 function emptyForm() {
   return {
     kode_aset: "",
@@ -117,24 +132,55 @@ function ManajemenAset() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
 
-  const load = async () => {
+  // ✅ Konstanta untuk items per halaman
+  const LIMIT = 10;
+  // ✅ Pagination state
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationInfo>({
+    total: 0,
+    page: 1,
+    limit: LIMIT,
+    totalPages: 0,
+  });
+  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // ✅ Load dengan pagination params
+  const load = async (currentPage = pagination.page) => {
     try {
       setLoading(true);
-      const res = await api.get("/api/assets");
+      const res = await api.get(
+        `/api/assets?page=${currentPage}&limit=${LIMIT}`,
+      );
+
       const data = res.data?.data ?? { assets: [], units: [] };
+      const paginationInfo = res.data?.pagination ?? {
+        total: 0,
+        page: 1,
+        limit: LIMIT,
+        totalPages: 0,
+      };
+
       setAssets((data.assets as Asset[]) ?? []);
       setUnits((data.units as Unit[]) ?? []);
+      setPagination(paginationInfo);
     } catch {
       setAssets([]);
       setUnits([]);
+      setPagination({
+        total: 0,
+        page: 1,
+        limit: LIMIT,
+        totalPages: 0,
+      });
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    void load();
-  }, []);
+    void load(page);
+  }, [page]);
 
   const stats = useMemo(() => {
     const byAsset = new Map<
@@ -157,6 +203,7 @@ function ManajemenAset() {
     return byAsset;
   }, [units]);
 
+  // ✅ Filter hanya untuk halaman saat ini (search client-side)
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return assets;
@@ -178,7 +225,6 @@ function ManajemenAset() {
     const num = form.kode_aset.replace(/\D/g, "");
     if (!num || !form.category || !form.merk)
       return toast.error("Kode (nomor), Kategori, Merk wajib diisi");
-
     try {
       await api.post("/api/assets", {
         kode_aset_num: num,
@@ -194,7 +240,7 @@ function ManajemenAset() {
       toast.success("Aset berhasil ditambahkan");
       setOpenAdd(false);
       setForm(emptyForm());
-      void load();
+      void load(1); // ✅ Reset ke halaman 1 setelah tambah aset
     } catch (err: any) {
       toast.error(err.response?.data?.message ?? "Gagal menambah aset");
     }
@@ -218,6 +264,14 @@ function ManajemenAset() {
     }));
   };
 
+  // ✅ Pagination handler
+  const handlePageChange = (newPage: number) => {
+    void load(newPage);
+  };
+
+  const getRowNumber = (idx: number) => {
+    return (pagination.page - 1) * LIMIT + idx + 1;
+  };
   return (
     <>
       <PageHeader
@@ -321,7 +375,6 @@ function ManajemenAset() {
                     />
                   </Field>
                 </div>
-
                 {/* Serial Number inputs untuk setiap unit */}
                 {form.units > 0 && (
                   <div className="sm:col-span-2">
@@ -368,7 +421,6 @@ function ManajemenAset() {
           </Dialog>
         }
       />
-
       <div className="mt-6 mb-3 relative max-w-md">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -392,192 +444,214 @@ function ManajemenAset() {
           />
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border bg-card shadow-(--shadow-card)">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="px-3 py-3 w-8"></th>
-                <th className="px-3 py-3">No</th>
-                <th className="px-3 py-3">Merk</th>
-                <th className="px-3 py-3">Type</th>
-                <th className="px-3 py-3">Kategori</th>
-                <th className="px-3 py-3">NO.PR</th>
-                <th className="px-3 py-3">No. PO</th>
-                <th className="px-3 py-3">Kelengkapan</th>
-                <th className="px-3 py-3 text-success">Stok Baik</th>
-                <th className="px-3 py-3 text-warning">Rusak Ringan</th>
-                <th className="px-3 py-3 text-destructive">Rusak Berat</th>
-                <th className="px-3 py-3">Aksi</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {filtered.map((a: Asset, idx: number) => {
-                const s = stats.get(a.id) ?? {
-                  good: 0,
-                  minor: 0,
-                  major: 0,
-                  total: 0,
-                };
-                const isOpen = expanded.has(a.id);
-                const aUnits = units.filter((u: Unit) => u.asset_id === a.id);
-                return (
-                  <Fragment key={a.id}>
-                    <tr className="hover:bg-muted/30">
-                      <td className="px-3 py-3">
-                        <button onClick={() => toggle(a.id)}>
-                          {isOpen ? (
-                            <ChevronDown className="size-4" />
-                          ) : (
-                            <ChevronRight className="size-4" />
-                          )}
-                        </button>
-                      </td>
-                      <td className="px-3 py-3">{idx + 1}</td>
-                      <td className="px-3 py-3 font-medium">{a.merk ?? "—"}</td>
-                      <td className="px-3 py-3">{a.type ?? "—"}</td>
-                      <td className="px-3 py-3">{a.category}</td>
-                      <td className="px-3 py-3 font-mono text-xs">
-                        {a.no_pr ?? "—"}
-                      </td>
-                      <td className="px-3 py-3 font-mono text-xs">
-                        {a.no_po ?? "—"}
-                      </td>
-                      <td
-                        className="px-3 py-3 max-w-45 truncate"
-                        title={a.kelengkapan ?? ""}
-                      >
-                        {a.kelengkapan ?? "—"}
-                      </td>
-                      <td className="px-3 py-3 text-success font-medium">
-                        {s.good}
-                      </td>
-                      <td className="px-3 py-3 text-warning font-medium">
-                        {s.minor}
-                      </td>
-                      <td className="px-3 py-3 text-destructive font-medium">
-                        {s.major}
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex gap-1">
-                          <Button
-                            size="sm"
-                            variant="ghost-navy"
-                            onClick={() => setEditAsset(a)}
-                          >
-                            <Pencil className="size-3.5" /> Update
-                          </Button>
-                          <DeleteAssetButton
-                            asset={a}
-                            unitsCount={aUnits.length}
-                            onDeleted={() => void load()}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr className="bg-muted/20">
-                        <td colSpan={12} className="px-6 py-3">
-                          <div className="rounded-lg border bg-card">
-                            <table className="w-full text-xs">
-                              <thead className="text-muted-foreground">
-                                <tr className="border-b">
-                                  <th className="px-3 py-2 text-left">
-                                    Kode Unit
-                                  </th>
-                                  <th className="px-3 py-2 text-left">
-                                    Serial Number
-                                  </th>
-                                  <th className="px-3 py-2 text-left">
-                                    Status
-                                  </th>
-                                  <th className="px-3 py-2 text-left">Fisik</th>
-                                  <th className="px-3 py-2 text-left">Aksi</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y">
-                                {aUnits.map((u: Unit) => (
-                                  <tr key={u.id}>
-                                    <td className="px-3 py-2 font-mono">
-                                      {u.unit_code}
-                                    </td>
-                                    <td className="px-3 py-2 font-mono text-[10px]">
-                                      {u.serial_number ?? "—"}
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      <span
-                                        className={cn(
-                                          "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                                          u.loan_status === "tersedia"
-                                            ? "bg-success/15 text-success"
-                                            : u.loan_status === "dipinjam"
-                                              ? "bg-warning/15 text-warning-foreground"
-                                              : "bg-destructive/15 text-destructive",
-                                        )}
-                                      >
-                                        {u.loan_status === "tersedia"
-                                          ? "Tersedia"
-                                          : u.loan_status === "dipinjam"
-                                            ? "Dipinjam"
-                                            : "Tidak Tersedia"}
-                                      </span>
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      <span
-                                        className={cn(
-                                          "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                                          u.condition === "good"
-                                            ? "bg-success/15 text-success"
-                                            : u.condition === "minor"
-                                              ? "bg-warning/15 text-warning-foreground"
-                                              : "bg-destructive/15 text-destructive",
-                                        )}
-                                      >
-                                        {u.condition === "good"
-                                          ? "Baik"
-                                          : u.condition === "minor"
-                                            ? "Rusak Ringan"
-                                            : "Rusak Berat"}
-                                      </span>
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      <div className="flex gap-1">
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          onClick={() => setEditUnit(u)}
-                                        >
-                                          <Pencil className="size-3" /> Update
-                                        </Button>
-                                        <DeleteUnitButton
-                                          unit={u}
-                                          onDeleted={() => void load()}
-                                        />
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
-                                {aUnits.length === 0 && (
-                                  <tr>
-                                    <td
-                                      colSpan={5}
-                                      className="px-3 py-3 text-center text-muted-foreground"
-                                    >
-                                      Tidak ada unit.
-                                    </td>
-                                  </tr>
-                                )}
-                              </tbody>
-                            </table>
+        <>
+          <div className="overflow-x-auto rounded-xl border bg-card shadow-(--shadow-card)">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-3 w-8"></th>
+                  <th className="px-3 py-3">No</th>
+                  <th className="px-3 py-3">Merk</th>
+                  <th className="px-3 py-3">Type</th>
+                  <th className="px-3 py-3">Kategori</th>
+                  <th className="px-3 py-3">NO.PR</th>
+                  <th className="px-3 py-3">No. PO</th>
+                  <th className="px-3 py-3">Kelengkapan</th>
+                  <th className="px-3 py-3 text-success">Stok Baik</th>
+                  <th className="px-3 py-3 text-warning">Rusak Ringan</th>
+                  <th className="px-3 py-3 text-destructive">Rusak Berat</th>
+                  <th className="px-3 py-3">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {filtered.map((a: Asset, idx: number) => {
+                  const s = stats.get(a.id) ?? {
+                    good: 0,
+                    minor: 0,
+                    major: 0,
+                    total: 0,
+                  };
+                  const isOpen = expanded.has(a.id);
+                  const aUnits = units.filter((u: Unit) => u.asset_id === a.id);
+                  return (
+                    <Fragment key={a.id}>
+                      <tr className="hover:bg-muted/30">
+                        <td className="px-3 py-3">
+                          <button onClick={() => toggle(a.id)}>
+                            {isOpen ? (
+                              <ChevronDown className="size-4" />
+                            ) : (
+                              <ChevronRight className="size-4" />
+                            )}
+                          </button>
+                        </td>
+                        <td className="px-3 py-3">
+                          {(pagination.page - 1) * LIMIT + idx + 1}
+                        </td>
+                        <td className="px-3 py-3 font-medium">
+                          {a.merk ?? "—"}
+                        </td>
+                        <td className="px-3 py-3">{a.type ?? "—"}</td>
+                        <td className="px-3 py-3">{a.category}</td>
+                        <td className="px-3 py-3 font-mono text-xs">
+                          {a.no_pr ?? "—"}
+                        </td>
+                        <td className="px-3 py-3 font-mono text-xs">
+                          {a.no_po ?? "—"}
+                        </td>
+                        <td
+                          className="px-3 py-3 max-w-45 truncate"
+                          title={a.kelengkapan ?? ""}
+                        >
+                          {a.kelengkapan ?? "—"}
+                        </td>
+                        <td className="px-3 py-3 text-success font-medium">
+                          {s.good}
+                        </td>
+                        <td className="px-3 py-3 text-warning font-medium">
+                          {s.minor}
+                        </td>
+                        <td className="px-3 py-3 text-destructive font-medium">
+                          {s.major}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost-navy"
+                              onClick={() => setEditAsset(a)}
+                            >
+                              <Pencil className="size-3.5" /> Update
+                            </Button>
+                            <DeleteAssetButton
+                              asset={a}
+                              unitsCount={aUnits.length}
+                              onDeleted={() => void load(pagination.page)}
+                            />
                           </div>
                         </td>
                       </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      {isOpen && (
+                        <tr className="bg-muted/20">
+                          <td colSpan={12} className="px-6 py-3">
+                            <div className="rounded-lg border bg-card">
+                              <table className="w-full text-xs">
+                                <thead className="text-muted-foreground">
+                                  <tr className="border-b">
+                                    <th className="px-3 py-2 text-left">
+                                      Kode Unit
+                                    </th>
+                                    <th className="px-3 py-2 text-left">
+                                      Serial Number
+                                    </th>
+                                    <th className="px-3 py-2 text-left">
+                                      Status
+                                    </th>
+                                    <th className="px-3 py-2 text-left">
+                                      Fisik
+                                    </th>
+                                    <th className="px-3 py-2 text-left">
+                                      Aksi
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                  {aUnits.map((u: Unit) => (
+                                    <tr key={u.id}>
+                                      <td className="px-3 py-2 font-mono">
+                                        {u.unit_code}
+                                      </td>
+                                      <td className="px-3 py-2 font-mono text-[10px]">
+                                        {u.serial_number ?? "—"}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <span
+                                          className={cn(
+                                            "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                                            u.loan_status === "tersedia"
+                                              ? "bg-success/15 text-success"
+                                              : u.loan_status === "dipinjam"
+                                                ? "bg-warning/15 text-warning-foreground"
+                                                : "bg-destructive/15 text-destructive",
+                                          )}
+                                        >
+                                          {u.loan_status === "tersedia"
+                                            ? "Tersedia"
+                                            : u.loan_status === "dipinjam"
+                                              ? "Dipinjam"
+                                              : "Tidak Tersedia"}
+                                        </span>
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <span
+                                          className={cn(
+                                            "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                                            u.condition === "good"
+                                              ? "bg-success/15 text-success"
+                                              : u.condition === "minor"
+                                                ? "bg-warning/15 text-warning-foreground"
+                                                : "bg-destructive/15 text-destructive",
+                                          )}
+                                        >
+                                          {u.condition === "good"
+                                            ? "Baik"
+                                            : u.condition === "minor"
+                                              ? "Rusak Ringan"
+                                              : "Rusak Berat"}
+                                        </span>
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <div className="flex gap-1">
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => setEditUnit(u)}
+                                          >
+                                            <Pencil className="size-3" /> Update
+                                          </Button>
+                                          <DeleteUnitButton
+                                            unit={u}
+                                            onDeleted={() =>
+                                              void load(pagination.page)
+                                            }
+                                          />
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {aUnits.length === 0 && (
+                                    <tr>
+                                      <td
+                                        colSpan={5}
+                                        className="px-3 py-3 text-center text-muted-foreground"
+                                      >
+                                        Tidak ada unit.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ✅ Pagination Component */}
+          <Pagination
+            page={pagination.page}
+            totalPages={pagination.totalPages}
+            total={pagination.total}
+            limit={pagination.limit}
+            onPageChange={handlePageChange}
+            loading={loading}
+          />
+        </>
       )}
 
       {editAsset && (
@@ -585,7 +659,7 @@ function ManajemenAset() {
           asset={editAsset}
           onClose={() => {
             setEditAsset(null);
-            void load();
+            void load(pagination.page);
           }}
         />
       )}
@@ -594,7 +668,7 @@ function ManajemenAset() {
           unit={editUnit}
           onClose={() => {
             setEditUnit(null);
-            void load();
+            void load(pagination.page);
           }}
         />
       )}
@@ -639,11 +713,9 @@ function EditAssetDialog({
     additionalSerialNumbers: [""],
   });
   const [saving, setSaving] = useState(false);
-
   const save = async () => {
     const num = f.kode_aset.replace(/\D/g, "");
     if (!num) return toast.error("Nomor kode aset wajib");
-
     try {
       setSaving(true);
       await api.patch(`/api/assets/${asset.id}`, {
@@ -665,7 +737,6 @@ function EditAssetDialog({
       setSaving(false);
     }
   };
-
   const handleAddUnitsChange = (newCount: number) => {
     setF((prev) => ({
       ...prev,
@@ -675,7 +746,6 @@ function EditAssetDialog({
         .map((_, i) => prev.additionalSerialNumbers[i] || ""),
     }));
   };
-
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -756,7 +826,6 @@ function EditAssetDialog({
               />
             </Field>
           </div>
-
           {/* Serial Number inputs untuk unit tambahan */}
           {f.addUnits > 0 && (
             <div className="sm:col-span-2">
@@ -819,7 +888,6 @@ function EditUnitDialog({
   const [serial_number, setSerialNumber] = useState(unit.serial_number || "");
   const [saving, setSaving] = useState(false);
 
-  // OTOMATIS DETERMINE STATUS
   const getAutoStatus = (cond: string): boolean => {
     if (cond === "minor" || cond === "major") {
       return false;
@@ -870,7 +938,6 @@ function EditUnitDialog({
               </SelectContent>
             </Select>
           </Field>
-
           <Field label="Serial Number (S/N)">
             <Input
               value={serial_number}
@@ -912,7 +979,6 @@ function EditUnitDialog({
             </ul>
           </div>
         </div>
-
         <DialogFooter className="sm:justify-between">
           <DeleteUnitButton unit={unit} onDeleted={onClose} variant="full" />
           <div className="flex gap-2">
@@ -941,7 +1007,6 @@ function DeleteAssetButton({
   variant?: "icon" | "full";
 }) {
   const [deleting, setDeleting] = useState(false);
-
   const handleDelete = async () => {
     try {
       setDeleting(true);
@@ -954,7 +1019,6 @@ function DeleteAssetButton({
       setDeleting(false);
     }
   };
-
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
@@ -1006,7 +1070,6 @@ function DeleteUnitButton({
   variant?: "icon" | "full";
 }) {
   const [deleting, setDeleting] = useState(false);
-
   const handleDelete = async () => {
     try {
       setDeleting(true);
@@ -1019,7 +1082,6 @@ function DeleteUnitButton({
       setDeleting(false);
     }
   };
-
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>

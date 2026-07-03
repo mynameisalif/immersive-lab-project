@@ -18,6 +18,8 @@ import {
   TabsTrigger,
 } from "../components/ui/tabs";
 import { LoanRequestForm } from "../components/loan/LoanRequestForm";
+import api from "@/lib/api";
+import { Pagination } from "../components/common/Pagination";
 
 export const Route = createFileRoute("/_app/pinjaman")({
   component: Pinjaman,
@@ -124,16 +126,26 @@ function Pinjaman() {
 
   const isChildRoute = matches.some((m) => m.routeId === "/_app/pinjaman/baru");
 
-  const load = async () => {
+  const LIMIT = 10;
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+
+  const load = async (currentPage = page) => {
     if (!user) return;
+    setLoading(true);
     try {
-      setLoading(true);
-      const res = await getLoans();
+      // ✅ FIX 1: tambah /api prefix + pagination params
+      const res = await api.get(
+        `/api/loans?page=${currentPage}&limit=${LIMIT}`,
+      );
+
+      // ✅ FIX 2: map dulu ke Loan[], BARU set ke state
       const data: Loan[] = (res.data?.data ?? []).map((r: any) => ({
         id: r.id,
         notes: r.notes ?? "",
         status: r.status,
-        statusMapped: mapStatus(r.status),
+        statusMapped: mapStatus(r.status), // ← penting! tanpa ini badge tidak muncul
         borrow_date: r.borrow_date,
         return_deadline: r.return_deadline,
         category: r.category,
@@ -145,18 +157,40 @@ function Pinjaman() {
         type: r.type ?? "",
         quantity: r.quantity ?? 0,
       }));
-      // Semua role hanya lihat loan sendiri
-      setRows(data.filter((r) => r.requester_id === user.id));
+
+      // ✅ FIX 3: HAPUS filter client-side!
+      // Backend sudah handle semua filtering berdasarkan role
+      // Jadi langsung set rows tanpa filter
+      setRows(data);
+
+      // ✅ FIX 4: ambil pagination dari response
+      setTotalPages(res.data.pagination?.totalPages ?? 1);
+      setTotal(res.data.pagination?.total ?? 0);
+      setPage(currentPage); // ← tambahkan ini supaya state page sync
     } catch {
       setRows([]);
+      setTotalPages(1);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
   };
 
+  // ✅ FIX 5: useEffect tetap sama
   useEffect(() => {
-    void load();
-  }, [user, role]);
+    void load(page);
+  }, [user, role, page]);
+
+  // ✅ Handler ganti halaman
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
+
+  // ✅ Handler ganti tab - reset ke halaman 1
+  const handleTabChange = (newTab: string) => {
+    setTab(newTab);
+    setPage(1); // ← penting! ganti tab = kembali ke halaman 1
+  };
 
   if (isChildRoute) return <Outlet />;
 
@@ -324,6 +358,14 @@ function Pinjaman() {
                   )}
                 </tbody>
               </table>
+              <Pagination
+                page={page}
+                totalPages={totalPages}
+                total={total}
+                limit={LIMIT}
+                onPageChange={handlePageChange}
+                loading={loading}
+              />
             </div>
           </TabsContent>
         </Tabs>

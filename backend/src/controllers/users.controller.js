@@ -249,25 +249,53 @@ exports.getDosen = async (req, res) => {
 
 // ─── GET notifikasi ───────────────────────────────────────────
 exports.getNotifications = async (req, res) => {
-  const userId = req.user?.userId; // ✅ userId (sesuai JWT payload)
-  try {
-    if (!userId) return res.json({ data: [] });
+  const userId = req.user?.userId; // ✅ sesuai JWT payload
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(50, parseInt(req.query.limit) || 20);
+  const offset = (page - 1) * limit;
 
+  try {
+    if (!userId) {
+      return res.json({
+        data: [],
+        pagination: { total: 0, page: 1, limit, totalPages: 0 },
+      });
+    }
+
+    // ✅ Count total notifikasi milik user ini
+    const countRes = await pool.query(
+      `SELECT COUNT(*) FROM notifications WHERE user_id = $1`,
+      [userId],
+    );
+    const total = parseInt(countRes.rows[0].count) || 0;
+
+    // ✅ Data dengan LIMIT/OFFSET
     const { rows } = await pool.query(
       `SELECT id, user_id, type, title, message, is_read, created_at
        FROM notifications
        WHERE user_id = $1
        ORDER BY created_at DESC
-       LIMIT 50`,
-      [userId],
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset],
     );
-    res.json({ data: rows || [] });
+
+    res.json({
+      data: rows || [],
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (err) {
     console.error("getNotifications error:", err);
-    res.json({ data: [] });
+    res.json({
+      data: [],
+      pagination: { total: 0, page: 1, limit, totalPages: 0 },
+    });
   }
 };
-
 // ─── PATCH tandai notifikasi dibaca ──────────────────────────
 exports.markNotifRead = async (req, res) => {
   const userId = req.user?.userId; // ✅ userId

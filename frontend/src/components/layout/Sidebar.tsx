@@ -10,6 +10,7 @@ import {
   PackageCheck,
   ArrowLeftRight,
   ListChecks,
+  Package,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { BrandLogo } from "../common/BrandLogo";
@@ -63,12 +64,12 @@ const adminNav: Item[] = [
   { to: "/aset", label: "Manajemen Aset", icon: Boxes },
   { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
   { to: "/approval", label: "Approval Final", icon: CheckSquare },
-  { to: "/verifikasi", label: "Verifikasi NIM/NIP", icon: PackageCheck },
-  { to: "/users", label: "Pengguna", icon: Users },
+  // { to: "/verifikasi", label: "Verifikasi NIM/NIP", icon: PackageCheck },
   { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
-  { to: "/pengambilan", label: "Pengambilan", icon: ListChecks },
+  { to: "/pengambilan", label: "Pengambilan", icon: Package },
   { to: "/laporan", label: "Laporan Peminjaman", icon: BarChart3 },
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
+  { to: "/users", label: "Pengguna", icon: Users },
 ];
 
 // ── Helper: pilih nav berdasarkan role & isKaprodi ─────────────

@@ -1,7 +1,11 @@
-import api from '@/lib/api';
+import api from "@/lib/api";
 
-export const getPendingApprovals = () =>
-  api.get('/api/approvals/pending');
+export const getPendingApprovals = async (params?: {
+  page?: number;
+  limit?: number;
+}) => {
+  return api.get("/api/approvals/pending", { params });
+};
 
 export const approveLoan = (loanId: string, reason: string) =>
   api.post(`/api/approvals/${loanId}/approve`, { reason });

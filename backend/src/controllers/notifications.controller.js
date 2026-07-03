@@ -10,22 +10,42 @@ const pool = require("../config/db");
  * Get all unread notifications for current user
  */
 exports.getNotifications = async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(50, parseInt(req.query.limit) || 20);
+  const offset = (page - 1) * limit;
+
   try {
     const userId = req.user?.id; // From auth middleware
-
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
+    // ✅ Count total notifikasi milik user ini
+    const countRes = await pool.query(
+      `SELECT COUNT(*) FROM notifications WHERE user_id = $1`,
+      [userId],
+    );
+    const total = parseInt(countRes.rows[0].count) || 0;
+
+    // ✅ Data dengan LIMIT/OFFSET
     const { rows } = await pool.query(
       `SELECT id, user_id, type, title, message, link, is_read, created_at
        FROM notifications
        WHERE user_id = $1
-       ORDER BY created_at DESC`,
-      [userId],
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset],
     );
 
-    res.json({ data: rows });
+    res.json({
+      data: rows,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (err) {
     console.error("[ERROR] getNotifications:", err.message);
     res.status(500).json({ message: "Server error", error: err.message });

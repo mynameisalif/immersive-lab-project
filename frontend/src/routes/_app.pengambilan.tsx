@@ -22,9 +22,11 @@ import {
   ClipboardList,
 } from "lucide-react";
 import { EmptyState } from "../components/common/EmptyState";
+import { Pagination } from "../components/common/Pagination";
 import api from "../lib/api";
 import { toast } from "sonner";
 import { Input } from "../components/ui/input";
+import { getApprovedForPickup } from "@/services/loan.service";
 
 export const Route = createFileRoute("/_app/pengambilan")({
   component: PengambilanPage,
@@ -46,7 +48,7 @@ interface LoanItem {
   category: string;
   notes: string | null;
   status: string;
-  created_at: string; // ✅ untuk grouping
+  created_at: string;
 }
 
 interface LoanGroup {
@@ -63,8 +65,15 @@ interface LoanGroup {
   items: LoanItem[];
 }
 
+interface PaginationData {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 // ── Helpers ───────────────────────────────────────────────────
-const GROUP_WINDOW_MS = 10_000; // FIX: 10 detik
+const GROUP_WINDOW_MS = 10_000;
 
 function groupLoans(items: LoanItem[]): LoanGroup[] {
   const sorted = [...items].sort(
@@ -75,7 +84,7 @@ function groupLoans(items: LoanItem[]): LoanGroup[] {
   for (const item of sorted) {
     const existing = groups.find(
       (g) =>
-        g.requester_id === item.requester_name && // fallback grouping
+        g.requester_id === item.requester_name &&
         g.borrow_date === item.borrow_date &&
         g.return_deadline === item.return_deadline &&
         g.category === item.category &&
@@ -140,27 +149,67 @@ function PengambilanPage() {
   const [confirming, setConfirming] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // ✅ TAMBAH: Pagination state
+  const LIMIT = 10;
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationData>({
+    total: 0,
+    page: 1,
+    limit: LIMIT,
+    totalPages: 0,
+  });
+
   useEffect(() => {
     if (role && role !== "admin") navigate({ to: "/dashboard" });
   }, [role]);
 
-  const loadLoans = async () => {
+  // ✅ UPDATE: Load function dengan endpoint baru + pagination
+  const loadLoans = async (currentPage = page) => {
     try {
       setLoading(true);
-      const res = await api.get("/api/loans");
+      // ✅ FIX: Call endpoint baru /api/loans/pickup/approved dengan pagination params
+      const res = await getApprovedForPickup({
+        page: currentPage,
+        limit: LIMIT,
+      });
+
+      // Data sudah di-filter backend (hanya status approved_admin)
       const all: LoanItem[] = res.data?.data ?? [];
-      // Hanya tampilkan yang status approved_admin (siap diambil)
-      setLoans(all.filter((l: any) => l.status === "approved_admin"));
+      setLoans(all);
+
+      // ✅ FIX: Set pagination dari response
+      setPagination(
+        res.data?.pagination ?? {
+          total: 0,
+          page: 1,
+          limit: LIMIT,
+          totalPages: 0,
+        },
+      );
+      setPage(currentPage);
     } catch {
       toast.error("Gagal memuat data peminjaman");
+      setLoans([]);
+      setPagination({
+        total: 0,
+        page: 1,
+        limit: LIMIT,
+        totalPages: 0,
+      });
     } finally {
       setLoading(false);
     }
   };
 
+  // ✅ FIX: useEffect trigger saat page berubah
   useEffect(() => {
-    void loadLoans();
-  }, []);
+    void loadLoans(page);
+  }, [page]);
+
+  // ✅ TAMBAH: Handler pagination
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
 
   const openConfirm = (group: LoanGroup) => {
     setSelectedGroup(group);
@@ -193,7 +242,8 @@ function PengambilanPage() {
         );
         setDialogOpen(false);
         setSelectedGroup(null);
-        await loadLoans();
+        // ✅ FIX: Reload dengan halaman saat ini
+        await loadLoans(page);
       }
     } finally {
       setConfirming(false);
@@ -272,99 +322,115 @@ function PengambilanPage() {
           />
         </div>
       ) : (
-        <div className="mt-4 space-y-3">
-          {filtered.map((group) => {
-            const isMulti = group.items.length > 1;
-            return (
-              <div
-                key={group.groupKey}
-                className="rounded-xl border bg-card p-5 shadow-sm transition hover:shadow-md"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1 space-y-2">
-                    {/* Aset */}
-                    {isMulti ? (
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <Package className="size-3.5 text-muted-foreground" />
-                          <span className="text-xs font-medium text-muted-foreground">
-                            {group.items.length} aset dalam satu pengajuan:
-                          </span>
-                        </div>
-                        <ul className="ml-5 space-y-0.5">
-                          {group.items.map((item) => (
-                            <li key={item.id} className="font-semibold text-sm">
-                              • {getMerkLabel(item)} × {item.quantity} unit
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : (
-                      <div className="flex items-start gap-3">
-                        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                          <Package className="size-4 text-primary" />
-                        </div>
+        <>
+          <div className="mt-4 space-y-3">
+            {filtered.map((group) => {
+              const isMulti = group.items.length > 1;
+              return (
+                <div
+                  key={group.groupKey}
+                  className="rounded-xl border bg-card p-5 shadow-sm transition hover:shadow-md"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1 space-y-2">
+                      {/* Aset */}
+                      {isMulti ? (
                         <div>
-                          <p className="font-semibold">
-                            {getMerkLabel(group.items[0])}
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <Package className="size-3.5 text-muted-foreground" />
+                            <span className="text-xs font-medium text-muted-foreground">
+                              {group.items.length} aset dalam satu pengajuan:
+                            </span>
+                          </div>
+                          <ul className="ml-5 space-y-0.5">
+                            {group.items.map((item) => (
+                              <li
+                                key={item.id}
+                                className="font-semibold text-sm"
+                              >
+                                • {getMerkLabel(item)} × {item.quantity} unit
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <div className="flex items-start gap-3">
+                          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                            <Package className="size-4 text-primary" />
+                          </div>
+                          <div>
+                            <p className="font-semibold">
+                              {getMerkLabel(group.items[0])}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {group.items[0].quantity} unit
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Peminjam */}
+                      <div className="flex items-start gap-2">
+                        <User className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium text-sm">
+                            {group.requester_name}
+                          </p>
+                          <p className="text-xs text-muted-foreground font-mono">
+                            {group.nim_nip ?? "NIM/NIP belum diisi"}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {group.items[0].quantity} unit
+                            {roleLabel[group.requester_role] ??
+                              group.requester_role}
                           </p>
                         </div>
                       </div>
-                    )}
 
-                    {/* Peminjam */}
-                    <div className="flex items-start gap-2">
-                      <User className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                      <div>
-                        <p className="font-medium text-sm">
-                          {group.requester_name}
-                        </p>
-                        <p className="text-xs text-muted-foreground font-mono">
-                          {group.nim_nip ?? "NIM/NIP belum diisi"}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {roleLabel[group.requester_role] ??
-                            group.requester_role}
-                        </p>
+                      {/* Tanggal & Kategori */}
+                      <div className="flex items-start gap-2">
+                        <Calendar className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                        <div>
+                          <p className="text-sm">
+                            {formatDate(group.borrow_date)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Kembali: {formatDate(group.return_deadline)} ·{" "}
+                            {categoryLabel[group.category] ?? group.category}
+                          </p>
+                        </div>
                       </div>
                     </div>
 
-                    {/* Tanggal & Kategori */}
-                    <div className="flex items-start gap-2">
-                      <Calendar className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                      <div>
-                        <p className="text-sm">
-                          {formatDate(group.borrow_date)}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Kembali: {formatDate(group.return_deadline)} ·{" "}
-                          {categoryLabel[group.category] ?? group.category}
-                        </p>
-                      </div>
+                    {/* Tombol */}
+                    <div className="shrink-0 self-center">
+                      <Button onClick={() => openConfirm(group)}>
+                        <CheckCircle2 className="mr-2 size-4" />
+                        Konfirmasi
+                        {isMulti ? ` (${group.items.length} Aset)` : ""}
+                      </Button>
                     </div>
                   </div>
 
-                  {/* Tombol */}
-                  <div className="shrink-0 self-center">
-                    <Button onClick={() => openConfirm(group)}>
-                      <CheckCircle2 className="mr-2 size-4" />
-                      Konfirmasi{isMulti ? ` (${group.items.length} Aset)` : ""}
-                    </Button>
-                  </div>
+                  {group.notes && (
+                    <p className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                      📝 {group.notes}
+                    </p>
+                  )}
                 </div>
+              );
+            })}
+          </div>
 
-                {group.notes && (
-                  <p className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                    📝 {group.notes}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
+          {/* ✅ TAMBAH: Pagination Component */}
+          <Pagination
+            page={pagination.page}
+            totalPages={pagination.totalPages}
+            total={pagination.total}
+            limit={pagination.limit}
+            onPageChange={handlePageChange}
+            loading={loading}
+          />
+        </>
       )}
 
       {/* ── Dialog konfirmasi ── */}
@@ -473,7 +539,7 @@ function PengambilanPage() {
             <Button onClick={handleConfirmGroup} disabled={confirming}>
               {confirming ? (
                 <>
-                  <Loader2 className="mr-2 size-4 animate-spin" />{" "}
+                  <Loader2 className="mr-2 size-4 animate-spin" />
                   Mengkonfirmasi...
                 </>
               ) : (

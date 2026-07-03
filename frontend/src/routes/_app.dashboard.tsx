@@ -171,39 +171,31 @@ function AdminDashboard() {
   const load = async () => {
     try {
       setLoading(true);
-      const [statsRes, loansRes] = await Promise.all([
+      const [statsRes, loanStatsRes, recentRes] = await Promise.all([
         api.get("/api/assets/stats"),
-        api.get("/api/loans"),
+        api.get("/api/loans/stats"),
+        api.get("/api/loans/recent"),
       ]);
       setAssetStats(statsRes.data?.data ?? { totalAsset: 0, stokMenipis: 0 });
-      const all: LoanRequest[] = loansRes.data?.data ?? [];
 
-      // KPI counts — tidak diubah, hitung dari individual loans
+      // ✅ KPI counts sekarang dari agregat backend (akurat, tidak terpotong pagination)
+      const s = loanStatsRes.data?.data ?? {};
       setCounts({
-        aktif: all.filter((l) =>
-          [
-            "pending",
-            "approved_dosen",
-            "approved_admin",
-            "picked_up",
-            "overdue",
-          ].includes(l.status),
-        ).length,
-        selesai: all.filter((l) => l.status === "returned").length,
-        pendingAdmin: all.filter((l) => l.status === "approved_dosen").length,
-        dipinjam: all.filter((l) => l.status === "picked_up").length,
-        terlambat: all.filter(isLate).length,
-        ditolak: all.filter((l) => l.status === "rejected").length,
+        aktif:
+          (s.pending ?? 0) +
+          (s.approved_dosen ?? 0) +
+          (s.approved_admin ?? 0) +
+          (s.picked_up ?? 0) +
+          (s.overdue ?? 0),
+        selesai: s.returned ?? 0,
+        pendingAdmin: s.approved_dosen ?? 0,
+        dipinjam: s.picked_up ?? 0,
+        terlambat: s.terlambat ?? 0,
+        ditolak: s.rejected ?? 0,
       });
 
-      // ✅ Recent 24 jam → group sebelum masuk tabel
-      const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const recent = all
-        .filter((l) => new Date(l.created_at) >= since24h)
-        .sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-        );
+      // ✅ Recent 24 jam — data mentah dari endpoint khusus, lalu group di frontend
+      const recent: LoanRequest[] = recentRes.data?.data ?? [];
       setRecentGroups(groupLoans(recent));
     } catch (err) {
       console.error("AdminDashboard load error:", err);
@@ -446,14 +438,40 @@ function AdminDashboard() {
 // ═══════════════════════════════════════════════════════════════
 function UserDashboard() {
   const { profile, role } = useAuth();
-  const [myLoans, setMyLoans] = useState<LoanRequest[]>([]);
+  const [loanStats, setLoanStats] = useState({
+    pending: 0,
+    approved_dosen: 0,
+    approved_admin: 0,
+    picked_up: 0,
+    returned: 0,
+    rejected: 0,
+    overdue: 0,
+    terlambat: 0,
+  });
+  const [recentGroups, setRecentGroups] = useState<LoanGroup[]>([]);
   const [loading, setLoading] = useState(false);
 
   const load = async () => {
     try {
       setLoading(true);
-      const res = await api.get("/api/loans");
-      setMyLoans(res.data?.data ?? []);
+      const [statsRes, recentRes] = await Promise.all([
+        api.get("/api/loans/stats"),
+        api.get("/api/loans/recent"),
+      ]);
+      setLoanStats(
+        statsRes.data?.data ?? {
+          pending: 0,
+          approved_dosen: 0,
+          approved_admin: 0,
+          picked_up: 0,
+          returned: 0,
+          rejected: 0,
+          overdue: 0,
+          terlambat: 0,
+        },
+      );
+      const recent: LoanRequest[] = recentRes.data?.data ?? [];
+      setRecentGroups(groupLoans(recent));
     } catch (err) {
       console.error("UserDashboard load error:", err);
     } finally {
@@ -465,24 +483,10 @@ function UserDashboard() {
     void load();
   }, []);
 
-  // Cards — tidak diubah
-  const aktifCount = myLoans.filter((l) => l.status === "picked_up").length;
-  const waitingCount = myLoans.filter((l) =>
-    ["pending", "approved_dosen"].includes(l.status),
-  ).length;
-  const approvedCount = myLoans.filter(
-    (l) => l.status === "approved_admin",
-  ).length;
-
-  // ✅ Recent 24 jam → group sebelum render tabel
-  const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const recent = myLoans
-    .filter((l) => new Date(l.created_at) >= since24h)
-    .sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
-  const recentGroups = groupLoans(recent);
+  // ✅ Cards sekarang dari agregat backend
+  const aktifCount = loanStats.picked_up;
+  const waitingCount = loanStats.pending + loanStats.approved_dosen;
+  const approvedCount = loanStats.approved_admin;
 
   return (
     <>

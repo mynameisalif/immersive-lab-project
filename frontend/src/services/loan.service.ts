@@ -16,7 +16,8 @@ export interface UnitCondition {
   return_notes?: string | null;
 }
 
-export const getLoans = () => api.get("/api/loans");
+export const getLoans = (params?: { page?: number; limit?: number }) =>
+  api.get("/api/loans", { params });
 
 export const getLoanById = (id: string) => api.get(`/api/loans/${id}`);
 
@@ -51,3 +52,21 @@ export const confirmReturn = (
   unitConditions: UnitCondition[],
 ) =>
   api.patch(`/api/loans/${loanId}/return`, { unit_conditions: unitConditions });
+
+export const getApprovedForPickup = (params?: {
+  page?: number;
+  limit?: number;
+}) => api.get("/api/loans/pickup/approved", { params });
+
+/**
+ * Get all loans pending return (admin only)
+ * Used by Pengembalian (Proses Return) page
+ * @param params - { page?: number, limit?: number }
+ */
+export const getReturnPending = (params?: { page?: number; limit?: number }) =>
+  api.get("/api/loans/return/pending", { params });
+
+export const getAllLoansForReport = (params?: {
+  page?: number;
+  limit?: number;
+}) => api.get("/api/loans/report/all", { params });
