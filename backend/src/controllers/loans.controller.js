@@ -748,38 +748,47 @@ exports.getLoanUnits = async (req, res) => {
 // hitung LANGSUNG di database, bukan di frontend dari data terpotong)
 exports.getLoanStats = async (req, res) => {
   try {
-    let whereClause = "";
+    let roleFilter = "";
     let params = [];
 
     if (req.user.role === "admin") {
-      // Admin: semua loan di sistem, tanpa filter
-      whereClause = "";
+      roleFilter = ""; // semua peminjaman
     } else if (req.user.role === "dosen" && req.user.isKaprodi) {
-      // Kaprodi: semua loan milik mahasiswa
-      whereClause = "WHERE ur.role = 'student'";
+      roleFilter = "WHERE ur.role = 'student'";
     } else {
-      // Dosen biasa / staff / student: hanya milik sendiri
-      whereClause = "WHERE lr.requester_id = $1";
+      roleFilter = "WHERE lr.requester_id = $1";
       params = [req.user.id];
     }
 
+    // ✅ Ambil 1 representative row per unique peminjaman (sama seperti
+    //    logic grouping di getAllLoans/getAllLoansForReport), lalu
+    //    hitung status dari situ — supaya satuannya SAMA dengan Laporan
+    //    (per peminjaman, bukan per aset).
     const query = `
+      WITH grouped AS (
+        SELECT DISTINCT ON (lr.requester_id, DATE(lr.borrow_date), lr.return_deadline)
+          lr.status,
+          lr.returned_at,
+          lr.return_deadline
+        FROM loan_requests lr
+        JOIN user_roles ur ON ur.user_id = lr.requester_id
+        ${roleFilter}
+        ORDER BY lr.requester_id, DATE(lr.borrow_date), lr.return_deadline, lr.created_at DESC
+      )
       SELECT
-        COUNT(*) FILTER (WHERE lr.status = 'pending') AS pending,
-        COUNT(*) FILTER (WHERE lr.status = 'approved_dosen') AS approved_dosen,
-        COUNT(*) FILTER (WHERE lr.status = 'approved_admin') AS approved_admin,
-        COUNT(*) FILTER (WHERE lr.status = 'picked_up') AS picked_up,
-        COUNT(*) FILTER (WHERE lr.status = 'returned') AS returned,
-        COUNT(*) FILTER (WHERE lr.status = 'rejected') AS rejected,
-        COUNT(*) FILTER (WHERE lr.status = 'overdue') AS overdue,
+        COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+        COUNT(*) FILTER (WHERE status = 'approved_dosen') AS approved_dosen,
+        COUNT(*) FILTER (WHERE status = 'approved_admin') AS approved_admin,
+        COUNT(*) FILTER (WHERE status = 'picked_up') AS picked_up,
+        COUNT(*) FILTER (WHERE status = 'returned') AS returned,
+        COUNT(*) FILTER (WHERE status = 'rejected') AS rejected,
+        COUNT(*) FILTER (WHERE status = 'overdue') AS overdue,
         COUNT(*) FILTER (
-          WHERE lr.status = 'overdue'
-             OR (lr.status = 'returned' AND lr.returned_at > lr.return_deadline)
-             OR (lr.status IN ('picked_up','approved_admin','approved_dosen') AND lr.return_deadline < NOW())
+          WHERE status = 'overdue'
+             OR (status = 'returned' AND returned_at > return_deadline)
+             OR (status IN ('picked_up','approved_admin','approved_dosen') AND return_deadline < NOW())
         ) AS terlambat
-      FROM loan_requests lr
-      JOIN user_roles ur ON ur.user_id = lr.requester_id
-      ${whereClause}`;
+      FROM grouped`;
 
     const { rows } = await pool.query(query, params);
     const r = rows[0];

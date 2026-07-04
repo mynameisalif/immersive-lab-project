@@ -12,6 +12,14 @@ export const Route = createFileRoute("/_app/status-approval")({
   head: () => ({ meta: [{ title: "Status Approval · MNP Lab Loan" }] }),
 });
 
+interface Asset {
+  id: string;
+  name: string;
+  merk?: string;
+  type?: string;
+  quantity: number;
+}
+
 interface Row {
   id: string;
   status: string;
@@ -23,6 +31,9 @@ interface Row {
   return_deadline: string;
   reject_reason: string | null;
   created_at: string;
+  // ✅ NEW: array lengkap semua aset dalam 1 peminjaman
+  assets?: Asset[];
+  asset_count?: number;
 }
 
 // Mapping status backend → LoanStatus Lovable (untuk StatusBadge & Timeline)
@@ -69,6 +80,9 @@ function StatusApproval() {
           return_deadline: r.return_deadline,
           reject_reason: r.reject_reason ?? null,
           created_at: r.created_at,
+          // ✅ NEW: ambil array assets lengkap dari response backend
+          assets: Array.isArray(r.assets) ? r.assets : [],
+          asset_count: r.asset_count ?? 1,
         }));
         // Urutkan terbaru di atas
         list.sort(
@@ -112,6 +126,8 @@ function StatusApproval() {
         <div className="mt-6 space-y-3">
           {rows.map((r) => {
             const mappedStatus = mapStatus(r.status);
+            const hasMultiAsset = r.assets && r.assets.length > 1;
+
             return (
               <div
                 key={r.id}
@@ -125,16 +141,40 @@ function StatusApproval() {
                         {r.id.slice(0, 8)}
                       </span>
                       <StatusBadge status={mappedStatus} />
+                      {hasMultiAsset && (
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                          {r.asset_count ?? r.assets!.length} aset
+                        </span>
+                      )}
                     </div>
 
-                    {/* Nama Aset */}
-                    <h3 className="mt-1 font-display font-semibold">
-                      {getMerkLabel(r)}
-                    </h3>
+                    {/* Nama Aset — tampilkan semua jika multi-asset */}
+                    {hasMultiAsset ? (
+                      <ul className="mt-1.5 space-y-0.5">
+                        {r.assets!.map((asset) => (
+                          <li
+                            key={asset.id}
+                            className="font-display text-sm font-semibold"
+                          >
+                            •{" "}
+                            {[asset.name, asset.merk, asset.type]
+                              .filter(Boolean)
+                              .join(" — ")}
+                            {asset.quantity > 1 ? ` (×${asset.quantity})` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <h3 className="mt-1 font-display font-semibold">
+                        {getMerkLabel(r)}
+                      </h3>
+                    )}
 
                     {/* Keterangan */}
                     {r.notes && (
-                      <p className="text-sm text-muted-foreground">{r.notes}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {r.notes}
+                      </p>
                     )}
 
                     {/* Tanggal */}

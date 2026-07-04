@@ -20,43 +20,51 @@ const pool = require("../config/db");
 
 // ─── Setiap 30 menit: auto-lock akun gagal login ≥5x ─────────
 // (tidak berubah)
-cron.schedule("*/30 * * * *", async () => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT id, email FROM auto_lock_candidates`,
-    );
-    if (rows.length === 0) return;
+// cron.schedule("*/30 * * * *", async () => {
+//   try {
+//     const { rows } = await pool.query(
+//       `SELECT id, email FROM auto_lock_candidates`,
+//     );
+//     if (rows.length === 0) return;
 
-    for (const user of rows) {
-      await pool.query(
-        `UPDATE profiles SET
-           is_blocked     = TRUE,
-           auto_locked    = TRUE,
-           blocked_reason = 'Terlalu banyak percobaan login gagal',
-           blocked_at     = NOW(),
-           updated_at     = NOW()
-         WHERE id = $1 AND is_blocked = FALSE`,
-        [user.id],
-      );
-      await pool.query(
-        `INSERT INTO account_lock_log
-           (user_id, action, trigger_type, reason)
-         VALUES ($1,'lock','failed_login','Auto-lock: 5+ gagal login')`,
-        [user.id],
-      );
-      await pool.query(
-        `INSERT INTO notifications (user_id, type, title, message)
-         VALUES ($1,'account_locked',
-           'Akun Anda Dikunci Otomatis',
-           'Akun Anda dikunci karena terlalu banyak percobaan login gagal. Hubungi admin.')`,
-        [user.id],
-      );
-    }
-    console.log(`[CRON] Auto-lock login: ${rows.length} akun dikunci`);
-  } catch (err) {
-    console.error("[CRON] Auto-lock error:", err.message);
-  }
-});
+//     for (const user of rows) {
+//       await pool.query(
+//         `UPDATE profiles SET
+//            is_blocked     = TRUE,
+//            auto_locked    = TRUE,
+//            blocked_reason = 'Terlalu banyak percobaan login gagal',
+//            blocked_at     = NOW(),
+//            updated_at     = NOW()
+//          WHERE id = $1 AND is_blocked = FALSE`,
+//         [user.id],
+//       );
+//       await pool.query(
+//         `INSERT INTO account_lock_log
+//            (user_id, action, trigger_type, reason)
+//          VALUES ($1,'lock','failed_login','Auto-lock: 5+ gagal login')`,
+//         [user.id],
+//       );
+//       await pool.query(
+//         `INSERT INTO notifications (user_id, type, title, message)
+//          VALUES ($1,'account_locked',
+//            'Akun Anda Dikunci Otomatis',
+//            'Akun Anda dikunci karena terlalu banyak percobaan login gagal. Hubungi admin.')`,
+//         [user.id],
+//       );
+//     }
+//     console.log(`[CRON] Auto-lock login: ${rows.length} akun dikunci`);
+//   } catch (err) {
+//     console.error("[CRON] Auto-lock error:", err.message);
+//   }
+// });
+// ─── Auto-lock berdasarkan gagal login: DINONAKTIFKAN ────────
+// Fitur ini tidak dipakai di sistem ini (hanya auto-lock overdue
+// return yang aktif). Cron sebelumnya menyebabkan bug: view
+// `auto_lock_candidates` menghitung SEMUA kegagalan login
+// sepanjang sejarah tanpa batasan waktu, sehingga user yang
+// pernah salah password beberapa kali di masa lalu (meski sudah
+// lama & sejak itu selalu berhasil login) tetap ter-lock begitu
+// akumulasi historisnya menembus ambang batas. Dinonaktifkan.
 
 // ─── Setiap jam: tandai overdue + kirim notif W1 ─────────────
 // 🔧 FIX: Sekarang juga kirim W1 notification untuk yang baru overdue

@@ -10,7 +10,6 @@ import { PageHeader } from "../components/common/PageHeader";
 import { Button } from "../components/ui/button";
 import { StatusBadge, type LoanStatus } from "../components/common/StatusBadge";
 import { useAuth } from "../lib/auth";
-import { getLoans } from "../services/loan.service";
 import {
   Tabs,
   TabsContent,
@@ -26,6 +25,16 @@ export const Route = createFileRoute("/_app/pinjaman")({
   head: () => ({ meta: [{ title: "Peminjaman · MNP Lab Loan" }] }),
 });
 
+interface Asset {
+  id: string;
+  name: string;
+  merk?: string;
+  type?: string;
+  quantity: number;
+}
+
+// ✅ Backend sekarang sudah mengirim 1 baris PER UNIK PEMINJAMAN
+//    (bukan per-aset lagi), lengkap dengan array `assets`.
 interface Loan {
   id: string;
   notes: string;
@@ -41,61 +50,8 @@ interface Loan {
   merk?: string;
   type?: string;
   quantity: number;
-}
-
-// ── Loan Group ────────────────────────────────────────────────
-interface LoanGroup {
-  groupKey: string;
-  requester_id: string;
-  requester_name: string;
-  status: string;
-  statusMapped: LoanStatus;
-  borrow_date: string;
-  return_deadline: string;
-  category: string;
-  created_at: string;
-  items: Loan[];
-}
-
-// ✅ Grouping 10 detik
-const GROUP_WINDOW_MS = 10_000;
-
-function groupLoans(loans: Loan[]): LoanGroup[] {
-  const sorted = [...loans].sort(
-    (a, b) =>
-      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-  );
-  const groups: LoanGroup[] = [];
-  for (const item of sorted) {
-    const existing = groups.find(
-      (g) =>
-        g.requester_id === item.requester_id &&
-        g.borrow_date === item.borrow_date &&
-        g.return_deadline === item.return_deadline &&
-        g.category === item.category &&
-        Math.abs(
-          new Date(g.created_at).getTime() -
-            new Date(item.created_at).getTime(),
-        ) <= GROUP_WINDOW_MS,
-    );
-    if (existing) {
-      existing.items.push(item);
-    } else {
-      groups.push({
-        groupKey: item.id,
-        requester_id: item.requester_id,
-        requester_name: item.requester_name ?? "—",
-        status: item.status,
-        statusMapped: item.statusMapped,
-        borrow_date: item.borrow_date,
-        return_deadline: item.return_deadline,
-        category: item.category,
-        created_at: item.created_at,
-        items: [item],
-      });
-    }
-  }
-  return groups;
+  assets?: Asset[];
+  asset_count?: number;
 }
 
 // ── Helpers — tidak diubah ─────────────────────────────────────
@@ -135,17 +91,18 @@ function Pinjaman() {
     if (!user) return;
     setLoading(true);
     try {
-      // ✅ FIX 1: tambah /api prefix + pagination params
       const res = await api.get(
         `/api/loans?page=${currentPage}&limit=${LIMIT}`,
       );
 
-      // ✅ FIX 2: map dulu ke Loan[], BARU set ke state
+      // ✅ Setiap row dari backend = 1 unik peminjaman (sudah digrouping
+      //    di backend), lengkap dengan array `assets` untuk semua aset
+      //    dalam peminjaman itu.
       const data: Loan[] = (res.data?.data ?? []).map((r: any) => ({
         id: r.id,
         notes: r.notes ?? "",
         status: r.status,
-        statusMapped: mapStatus(r.status), // ← penting! tanpa ini badge tidak muncul
+        statusMapped: mapStatus(r.status),
         borrow_date: r.borrow_date,
         return_deadline: r.return_deadline,
         category: r.category,
@@ -156,17 +113,14 @@ function Pinjaman() {
         merk: r.merk ?? "",
         type: r.type ?? "",
         quantity: r.quantity ?? 0,
+        assets: Array.isArray(r.assets) ? r.assets : [],
+        asset_count: r.asset_count ?? 1,
       }));
 
-      // ✅ FIX 3: HAPUS filter client-side!
-      // Backend sudah handle semua filtering berdasarkan role
-      // Jadi langsung set rows tanpa filter
       setRows(data);
-
-      // ✅ FIX 4: ambil pagination dari response
       setTotalPages(res.data.pagination?.totalPages ?? 1);
       setTotal(res.data.pagination?.total ?? 0);
-      setPage(currentPage); // ← tambahkan ini supaya state page sync
+      setPage(currentPage);
     } catch {
       setRows([]);
       setTotalPages(1);
@@ -176,37 +130,32 @@ function Pinjaman() {
     }
   };
 
-  // ✅ FIX 5: useEffect tetap sama
   useEffect(() => {
     void load(page);
   }, [user, role, page]);
 
-  // ✅ Handler ganti halaman
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
 
-  // ✅ Handler ganti tab - reset ke halaman 1
   const handleTabChange = (newTab: string) => {
     setTab(newTab);
-    setPage(1); // ← penting! ganti tab = kembali ke halaman 1
+    setPage(1);
   };
 
   if (isChildRoute) return <Outlet />;
 
-  // ✅ Group dulu, baru filter berdasarkan tab
-  const allGroups = groupLoans(rows);
-
-  const filteredGroups = allGroups.filter((g) => {
+  // ✅ Tidak perlu groupLoans lagi — backend sudah mengirim 1 baris
+  //    per unik peminjaman. Filter langsung di atas `rows`.
+  const filteredRows = rows.filter((r) => {
     if (tab === "all") return true;
-    if (tab === "menunggu") return isMenunggu(g.status);
-    if (tab === "aktif") return isAktif(g.status);
-    if (tab === "selesai") return isSelesai(g.status);
+    if (tab === "menunggu") return isMenunggu(r.status);
+    if (tab === "aktif") return isAktif(r.status);
+    if (tab === "selesai") return isSelesai(r.status);
     return true;
   });
 
   const showPeminjam = role === "admin";
-  // ✅ Kolom Qty dihapus, digabung di kolom Aset → colCount -1
   const colCount = showPeminjam ? 7 : 6;
 
   const heading =
@@ -252,7 +201,6 @@ function Pinjaman() {
         }
       />
 
-      {/* Form request untuk non-admin — tidak diubah */}
       {isRequester && (
         <section className="mt-6 rounded-xl border bg-card p-5 shadow-(--shadow-card)">
           <h2 className="font-display text-base font-semibold">
@@ -267,10 +215,9 @@ function Pinjaman() {
         </section>
       )}
 
-      {/* Tabel — ✅ Grouped */}
       <section className="mt-8">
         <h2 className="mb-3 font-display text-base font-semibold">{heading}</h2>
-        <Tabs value={tab} onValueChange={setTab}>
+        <Tabs value={tab} onValueChange={handleTabChange}>
           <TabsList>
             <TabsTrigger value="all">Semua</TabsTrigger>
             <TabsTrigger value="menunggu">Menunggu</TabsTrigger>
@@ -285,7 +232,6 @@ function Pinjaman() {
                   <tr>
                     <th className="px-4 py-3">ID</th>
                     {showPeminjam && <th className="px-4 py-3">Peminjam</th>}
-                    {/* ✅ Kolom Aset mencakup qty (Qty dihapus sebagai kolom terpisah) */}
                     <th className="px-4 py-3">Aset</th>
                     <th className="px-4 py-3">Kategori</th>
                     <th className="px-4 py-3">Tgl Pinjam</th>
@@ -303,7 +249,7 @@ function Pinjaman() {
                         Memuat data…
                       </td>
                     </tr>
-                  ) : filteredGroups.length === 0 ? (
+                  ) : filteredRows.length === 0 ? (
                     <tr>
                       <td
                         colSpan={colCount}
@@ -313,48 +259,55 @@ function Pinjaman() {
                       </td>
                     </tr>
                   ) : (
-                    filteredGroups.map((group) => (
-                      <tr key={group.groupKey} className="hover:bg-muted/30">
-                        <td className="px-4 py-3 font-mono text-xs">
-                          {group.groupKey.slice(0, 8)}
-                        </td>
-                        {showPeminjam && (
-                          <td className="px-4 py-3">{group.requester_name}</td>
-                        )}
-                        {/* ✅ Aset: 1 baris jika single, list jika multi */}
-                        <td className="px-4 py-3">
-                          {group.items.length > 1 ? (
-                            <ul className="space-y-0.5">
-                              {group.items.map((item) => (
-                                <li key={item.id} className="text-xs">
-                                  • {getMerkLabel(item)} ×{item.quantity}
-                                </li>
-                              ))}
-                            </ul>
-                          ) : (
-                            <span>
-                              {getMerkLabel(group.items[0])}
-                              <span className="text-muted-foreground">
-                                {" "}
-                                ×{group.items[0].quantity}
-                              </span>
-                            </span>
+                    filteredRows.map((row) => {
+                      const hasMultiAsset = row.assets && row.assets.length > 1;
+                      return (
+                        <tr key={row.id} className="hover:bg-muted/30">
+                          <td className="px-4 py-3 font-mono text-xs">
+                            {row.id.slice(0, 8)}
+                          </td>
+                          {showPeminjam && (
+                            <td className="px-4 py-3">{row.requester_name}</td>
                           )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {getCategoryLabel(group.category)}
-                        </td>
-                        <td className="px-4 py-3">
-                          {formatDate(group.borrow_date)}
-                        </td>
-                        <td className="px-4 py-3">
-                          {formatDate(group.return_deadline)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <StatusBadge status={group.statusMapped} />
-                        </td>
-                      </tr>
-                    ))
+                          {/* ✅ Aset: list semua item jika multi-asset */}
+                          <td className="px-4 py-3">
+                            {hasMultiAsset ? (
+                              <ul className="space-y-0.5">
+                                {row.assets!.map((asset) => (
+                                  <li key={asset.id} className="text-xs">
+                                    •{" "}
+                                    {[asset.name, asset.merk, asset.type]
+                                      .filter(Boolean)
+                                      .join(" ")}{" "}
+                                    ×{asset.quantity}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <span>
+                                {getMerkLabel(row)}
+                                <span className="text-muted-foreground">
+                                  {" "}
+                                  ×{row.quantity}
+                                </span>
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {getCategoryLabel(row.category)}
+                          </td>
+                          <td className="px-4 py-3">
+                            {formatDate(row.borrow_date)}
+                          </td>
+                          <td className="px-4 py-3">
+                            {formatDate(row.return_deadline)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <StatusBadge status={row.statusMapped} />
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
