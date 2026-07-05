@@ -15,18 +15,16 @@ const VALID_ASSET_CATEGORIES = [
 
 exports.getAllAssets = async (req, res) => {
   try {
-    // ✅ Get pagination params
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(50, parseInt(req.query.limit) || 10);
     const offset = (page - 1) * limit;
 
-    // ✅ FIX 1: Get TOTAL count untuk pagination metadata
     const { rows: countRows } = await pool.query(
       `SELECT COUNT(*) as total FROM assets`,
     );
     const total = parseInt(countRows[0].total, 10);
 
-    // ✅ FIX 2: Query assets DENGAN pagination + include kode_aset
+    // ✅ FIX: kelengkapan dihapus dari select assets (sudah pindah ke unit)
     const { rows: assets } = await pool.query(
       `SELECT 
         id, 
@@ -38,7 +36,6 @@ exports.getAllAssets = async (req, res) => {
         type, 
         no_pr, 
         no_po, 
-        kelengkapan,
         kode_aset,
         created_at, 
         updated_at
@@ -48,18 +45,19 @@ exports.getAllAssets = async (req, res) => {
       [limit, offset],
     );
 
-    // ✅ FIX 3: Query units HANYA untuk assets yang muncul di halaman ini
     const assetIds = assets.map((a) => a.id);
 
     let units = [];
     if (assetIds.length > 0) {
       const placeholders = assetIds.map((_, i) => `$${i + 1}`).join(",");
+      // ✅ FIX: tambah kolom kelengkapan di select unit
       const { rows: unitsRows } = await pool.query(
         `SELECT 
           id, 
           asset_id, 
           unit_code, 
           serial_number, 
+          kelengkapan,
           is_available, 
           condition, 
           loan_status, 
@@ -73,7 +71,6 @@ exports.getAllAssets = async (req, res) => {
       units = unitsRows;
     }
 
-    // ✅ FIX 4: Return response dengan pagination metadata
     res.json({
       data: { assets, units },
       pagination: {
@@ -97,20 +94,18 @@ exports.createAsset = async (req, res) => {
     type,
     no_pr,
     no_po,
-    kelengkapan,
     image_url,
     units: numUnits = 1,
-    unitSerialNumbers = [], // Array of S/N untuk setiap unit
+    unitSerialNumbers = [],
+    unitKelengkapan = [], // ✅ NEW: array kelengkapan per unit (opsional saat create)
   } = req.body;
 
-  // Validasi field wajib
   if (!kode_aset_num || !category || !merk) {
     return res.status(400).json({
       message: "kode_aset_num, category, merk wajib diisi",
     });
   }
 
-  // Validasi kategori
   if (!VALID_ASSET_CATEGORIES.includes(category)) {
     return res.status(400).json({ message: "Kategori tidak valid" });
   }
@@ -122,7 +117,6 @@ exports.createAsset = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // ✅ CEK DUPLIKAT: kode_aset sudah ada
     const dupKode = await client.query(
       `SELECT id, name FROM assets WHERE kode_aset = $1`,
       [kodeAset],
@@ -136,9 +130,10 @@ exports.createAsset = async (req, res) => {
 
     const name = [merk, type].filter(Boolean).join(" ") || kodeAset;
 
+    // ✅ FIX: kelengkapan dihapus dari insert assets
     const { rows: assetRows } = await client.query(
-      `INSERT INTO assets (name, category, merk, type, no_pr, no_po, kelengkapan, image_url, kode_aset)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      `INSERT INTO assets (name, category, merk, type, no_pr, no_po, image_url, kode_aset)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
       [
         name,
         category,
@@ -146,14 +141,12 @@ exports.createAsset = async (req, res) => {
         type || null,
         no_pr || null,
         no_po || null,
-        kelengkapan || null,
         image_url || null,
         kodeAset,
       ],
     );
     const assetId = assetRows[0].id;
 
-    // 🔢 Find next available sequential unit code number
     const { rows: maxRows } = await client.query(
       `SELECT MAX(CAST(SUBSTRING(unit_code, 10) AS INTEGER)) as max_num 
        FROM asset_units 
@@ -163,11 +156,12 @@ exports.createAsset = async (req, res) => {
       parseInt(maxRows[0]?.max_num || paddedNum) || parseInt(paddedNum);
     const startNum = maxNum + 1;
 
-    // Insert units dengan unit_code sequential (MNP/IPRO/0067, 0068, 0069, ...)
+    // ✅ FIX: tambah kelengkapan per unit (nullable, diisi belakangan via Update Unit)
     const unitValues = Array.from({ length: numUnits }, (_, i) => [
       assetId,
       `MNP/IPRO/${String(startNum + i).padStart(4, "0")}`,
-      unitSerialNumbers[i] || null, // S/N bisa berbeda per unit
+      unitSerialNumbers[i] || null,
+      unitKelengkapan[i] || null,
       true,
       "good",
       "tersedia",
@@ -177,12 +171,12 @@ exports.createAsset = async (req, res) => {
       const placeholders = unitValues
         .map(
           (_, i) =>
-            `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`,
+            `($${i * 7 + 1}, $${i * 7 + 2}, $${i * 7 + 3}, $${i * 7 + 4}, $${i * 7 + 5}, $${i * 7 + 6}, $${i * 7 + 7})`,
         )
         .join(",");
       const flatValues = unitValues.flat();
       await client.query(
-        `INSERT INTO asset_units (asset_id, unit_code, serial_number, is_available, condition, loan_status) VALUES ${placeholders}`,
+        `INSERT INTO asset_units (asset_id, unit_code, serial_number, kelengkapan, is_available, condition, loan_status) VALUES ${placeholders}`,
         flatValues,
       );
     }
@@ -210,10 +204,10 @@ exports.updateAsset = async (req, res) => {
     type,
     no_pr,
     no_po,
-    kelengkapan,
     image_url,
     addUnits = 0,
-    additionalSerialNumbers = [], // Array of S/N untuk unit baru
+    additionalSerialNumbers = [],
+    additionalKelengkapan = [], // ✅ NEW: kelengkapan untuk unit baru (opsional)
   } = req.body;
 
   if (!kode_aset_num)
@@ -226,8 +220,9 @@ exports.updateAsset = async (req, res) => {
     const kodeAset = `MNP/IPRO/${paddedNum}`;
     const name = [merk, type].filter(Boolean).join(" ") || kodeAset;
 
+    // ✅ FIX: kelengkapan dihapus dari update assets
     const { rowCount } = await client.query(
-      `UPDATE assets SET name = $1, category = $2, merk = $3, type = $4, no_pr = $5, no_po = $6, kelengkapan = $7, image_url = $8, kode_aset = $9, updated_at = NOW() WHERE id = $10`,
+      `UPDATE assets SET name = $1, category = $2, merk = $3, type = $4, no_pr = $5, no_po = $6, image_url = $7, kode_aset = $8, updated_at = NOW() WHERE id = $9`,
       [
         name,
         category,
@@ -235,7 +230,6 @@ exports.updateAsset = async (req, res) => {
         type || null,
         no_pr || null,
         no_po || null,
-        kelengkapan || null,
         image_url || null,
         kodeAset,
         id,
@@ -246,8 +240,12 @@ exports.updateAsset = async (req, res) => {
       return res.status(404).json({ message: "Aset tidak ditemukan" });
     }
 
+    if (!VALID_ASSET_CATEGORIES.includes(category)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Kategori tidak valid" });
+    }
+
     if (addUnits > 0) {
-      // 🔢 Find next available sequential unit code number
       const { rows: maxRows } = await client.query(
         `SELECT MAX(CAST(SUBSTRING(unit_code, 10) AS INTEGER)) as max_num 
          FROM asset_units 
@@ -257,10 +255,12 @@ exports.updateAsset = async (req, res) => {
         parseInt(maxRows[0]?.max_num || paddedNum) || parseInt(paddedNum);
       const startNum = maxNum + 1;
 
+      // ✅ FIX: tambah kelengkapan per unit baru
       const unitValues = Array.from({ length: addUnits }, (_, i) => [
         id,
         `MNP/IPRO/${String(startNum + i).padStart(4, "0")}`,
-        additionalSerialNumbers[i] || null, // S/N bisa berbeda per unit
+        additionalSerialNumbers[i] || null,
+        additionalKelengkapan[i] || null,
         true,
         "good",
         "tersedia",
@@ -269,12 +269,12 @@ exports.updateAsset = async (req, res) => {
       const placeholders = unitValues
         .map(
           (_, i) =>
-            `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`,
+            `($${i * 7 + 1}, $${i * 7 + 2}, $${i * 7 + 3}, $${i * 7 + 4}, $${i * 7 + 5}, $${i * 7 + 6}, $${i * 7 + 7})`,
         )
         .join(",");
       const flatValues = unitValues.flat();
       await client.query(
-        `INSERT INTO asset_units (asset_id, unit_code, serial_number, is_available, condition, loan_status) VALUES ${placeholders}`,
+        `INSERT INTO asset_units (asset_id, unit_code, serial_number, kelengkapan, is_available, condition, loan_status) VALUES ${placeholders}`,
         flatValues,
       );
     }
@@ -292,8 +292,6 @@ exports.updateAsset = async (req, res) => {
   } finally {
     client.release();
   }
-  if (!VALID_ASSET_CATEGORIES.includes(category))
-    return res.status(400).json({ message: "Kategori tidak valid" });
 };
 
 exports.deleteAsset = async (req, res) => {
@@ -325,7 +323,8 @@ exports.deleteAsset = async (req, res) => {
 
 exports.updateUnit = async (req, res) => {
   const { unitId } = req.params;
-  const { condition, is_available, serial_number } = req.body;
+  // ✅ FIX: terima kelengkapan di body updateUnit
+  const { condition, is_available, serial_number, kelengkapan } = req.body;
 
   const validConditions = ["good", "minor", "major"];
 
@@ -355,10 +354,17 @@ exports.updateUnit = async (req, res) => {
       values.push(serial_number || null);
     }
 
+    // ✅ FIX: update kolom kelengkapan per unit
+    if (kelengkapan !== undefined) {
+      updates.push(`kelengkapan = $${paramIndex++}`);
+      values.push(kelengkapan || null);
+    }
+
     if (
       condition ||
       is_available !== undefined ||
-      serial_number !== undefined
+      serial_number !== undefined ||
+      kelengkapan !== undefined
     ) {
       updates.push(`updated_at = NOW()`);
     }
@@ -410,13 +416,11 @@ exports.deleteUnit = async (req, res) => {
 
 exports.getAssetStats = async (req, res) => {
   try {
-    // Total aset
     const { rows: assetRows } = await pool.query(
       `SELECT COUNT(*) as count FROM assets`,
     );
     const totalAsset = parseInt(assetRows[0].count, 10);
 
-    // Stok yang menipis (total unit ≤ 1)
     const { rows: stokRows } = await pool.query(
       `SELECT a.id, a.name, COUNT(au.id) as total
        FROM assets a

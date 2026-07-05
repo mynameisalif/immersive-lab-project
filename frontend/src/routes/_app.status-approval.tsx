@@ -22,6 +22,7 @@ interface Asset {
 
 interface Row {
   id: string;
+  loan_number?: string;
   status: string;
   notes: string;
   asset_name: string;
@@ -71,6 +72,7 @@ function StatusApproval() {
         const data = res.data?.data ?? [];
         const list: Row[] = data.map((r: any) => ({
           id: r.id,
+          loan_number: r.loan_number ?? null,
           status: r.status,
           notes: r.notes ?? r.purpose ?? "",
           asset_name: r.asset_name ?? "—",
@@ -138,7 +140,7 @@ function StatusApproval() {
                     {/* ID & Status */}
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs text-muted-foreground">
-                        {r.id.slice(0, 8)}
+                        {r.loan_number ?? r.id.slice(0, 8)}
                       </span>
                       <StatusBadge status={mappedStatus} />
                       {hasMultiAsset && (

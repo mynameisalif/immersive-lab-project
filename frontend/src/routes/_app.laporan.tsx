@@ -28,6 +28,7 @@ interface Asset {
 
 interface Row {
   id: string;
+  loan_number?: string;
   status: string;
   notes: string;
   asset_name: string;
@@ -124,6 +125,7 @@ function Laporan() {
 
       const data: Row[] = (res.data?.data ?? []).map((r: any) => ({
         id: r.id,
+        loan_number: r.loan_number ?? null,
         status: r.status,
         notes: r.notes ?? "—",
         asset_name: r.asset_name ?? "—",
@@ -257,7 +259,7 @@ function Laporan() {
               rows.map((r, idx) => (
                 <tr key={idx} className="hover:bg-muted/30">
                   <td className="px-4 py-3 font-mono text-xs">
-                    {r.id.slice(0, 8)}
+                    {r.loan_number ?? r.id.slice(0, 8)}
                   </td>
                   {(role === "admin" || role === "dosen") && (
                     <>

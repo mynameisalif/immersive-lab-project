@@ -1,5 +1,6 @@
 // ✅ UPDATED frontend/src/routes/_app.aset.tsx
-// Menggunakan Pagination.tsx component yang sudah ada
+// - Kolom "Kelengkapan" dipindah dari tabel Aset → tabel Unit
+// - Field kelengkapan dipindah dari form "Tambah Aset" → form "Update Unit"
 
 import { createFileRoute } from "@tanstack/react-router";
 import { Fragment } from "react";
@@ -9,7 +10,6 @@ import { Pagination } from "../components/common/Pagination";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Textarea } from "../components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -29,7 +29,6 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react";
-import { getAllAssets } from "../services/asset.service";
 import {
   Dialog,
   DialogContent,
@@ -67,13 +66,12 @@ const CATEGORY_OPTIONS = [
   "Others",
 ];
 
-// ✅ Konstanta untuk items per halaman
-
 export const Route = createFileRoute("/_app/aset")({
   component: ManajemenAset,
   head: () => ({ meta: [{ title: "Manajemen Aset · MNP Lab Loan" }] }),
 });
 
+// ✅ FIX: kelengkapan dihapus dari interface Asset
 interface Asset {
   id: string;
   name: string;
@@ -83,22 +81,22 @@ interface Asset {
   type: string | null;
   no_pr: string | null;
   no_po: string | null;
-  kelengkapan: string | null;
   kode_aset: string | null;
   image_url: string | null;
 }
 
+// ✅ FIX: kelengkapan ditambahkan ke interface Unit
 interface Unit {
   id: string;
   asset_id: string;
   unit_code: string;
   serial_number: string | null;
+  kelengkapan: string | null;
   is_available: boolean;
   condition: "good" | "minor" | "major";
   loan_status: "tersedia" | "dipinjam" | "tidak_tersedia";
 }
 
-// ✅ Pagination state interface
 interface PaginationInfo {
   total: number;
   page: number;
@@ -106,6 +104,7 @@ interface PaginationInfo {
   totalPages: number;
 }
 
+// ✅ FIX: kelengkapan dihapus dari emptyForm (Tambah Aset)
 function emptyForm() {
   return {
     kode_aset: "",
@@ -114,9 +113,9 @@ function emptyForm() {
     type: "",
     no_pr: "",
     no_po: "",
-    kelengkapan: "",
     units: 1,
     unitSerialNumbers: [""],
+    unitKelengkapan: [""], // ✅ NEW: opsional saat create, bisa diisi belakangan
   };
 }
 
@@ -132,9 +131,7 @@ function ManajemenAset() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
 
-  // ✅ Konstanta untuk items per halaman
   const LIMIT = 10;
-  // ✅ Pagination state
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationInfo>({
     total: 0,
@@ -142,10 +139,7 @@ function ManajemenAset() {
     limit: LIMIT,
     totalPages: 0,
   });
-  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
-  const [deleteDialog, setDeleteDialog] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  // ✅ Load dengan pagination params
+
   const load = async (currentPage = pagination.page) => {
     try {
       setLoading(true);
@@ -203,7 +197,6 @@ function ManajemenAset() {
     return byAsset;
   }, [units]);
 
-  // ✅ Filter hanya untuk halaman saat ini (search client-side)
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return assets;
@@ -226,6 +219,8 @@ function ManajemenAset() {
     if (!num || !form.category || !form.merk)
       return toast.error("Kode (nomor), Kategori, Merk wajib diisi");
     try {
+      // ✅ FIX: kelengkapan dihapus dari payload asset-level,
+      // dikirim per unit lewat unitKelengkapan
       await api.post("/api/assets", {
         kode_aset_num: num,
         category: form.category,
@@ -233,14 +228,14 @@ function ManajemenAset() {
         type: form.type || null,
         no_pr: form.no_pr || null,
         no_po: form.no_po || null,
-        kelengkapan: form.kelengkapan || null,
         units: form.units,
         unitSerialNumbers: form.unitSerialNumbers.filter(Boolean),
+        unitKelengkapan: form.unitKelengkapan, // boleh berisi string kosong, backend handle null
       });
       toast.success("Aset berhasil ditambahkan");
       setOpenAdd(false);
       setForm(emptyForm());
-      void load(1); // ✅ Reset ke halaman 1 setelah tambah aset
+      void load(1);
     } catch (err: any) {
       toast.error(err.response?.data?.message ?? "Gagal menambah aset");
     }
@@ -254,6 +249,7 @@ function ManajemenAset() {
     });
   };
 
+  // ✅ FIX: handleUnitsChange juga sinkronkan unitKelengkapan
   const handleUnitsChange = (newCount: number) => {
     setForm((prev) => ({
       ...prev,
@@ -261,17 +257,16 @@ function ManajemenAset() {
       unitSerialNumbers: Array(newCount)
         .fill("")
         .map((_, i) => prev.unitSerialNumbers[i] || ""),
+      unitKelengkapan: Array(newCount)
+        .fill("")
+        .map((_, i) => prev.unitKelengkapan[i] || ""),
     }));
   };
 
-  // ✅ Pagination handler
   const handlePageChange = (newPage: number) => {
     void load(newPage);
   };
 
-  const getRowNumber = (idx: number) => {
-    return (pagination.page - 1) * LIMIT + idx + 1;
-  };
   return (
     <>
       <PageHeader
@@ -364,18 +359,9 @@ function ManajemenAset() {
                     onChange={(e) => handleUnitsChange(Number(e.target.value))}
                   />
                 </Field>
-                <div className="sm:col-span-2">
-                  <Field label="Kelengkapan">
-                    <Textarea
-                      rows={2}
-                      value={form.kelengkapan}
-                      onChange={(e) =>
-                        setForm({ ...form, kelengkapan: e.target.value })
-                      }
-                    />
-                  </Field>
-                </div>
-                {/* Serial Number inputs untuk setiap unit */}
+                {/* ✅ FIX: Textarea "Kelengkapan" (asset-level) DIHAPUS dari sini */}
+
+                {/* Serial Number & Kelengkapan per unit — kelengkapan opsional, bisa dilengkapi nanti via Update Unit */}
                 {form.units > 0 && (
                   <div className="sm:col-span-2">
                     <div className="border-t pt-3 mt-2">
@@ -405,6 +391,10 @@ function ManajemenAset() {
                           </div>
                         ))}
                       </div>
+                      <p className="text-xs text-muted-foreground mt-3">
+                        💡 Kelengkapan tiap unit dapat diisi nanti lewat tombol{" "}
+                        <strong>Update</strong> pada unit setelah aset dibuat.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -447,6 +437,7 @@ function ManajemenAset() {
         <>
           <div className="overflow-x-auto rounded-xl border bg-card shadow-(--shadow-card)">
             <table className="w-full text-sm">
+              {/* ✅ FIX: kolom "Kelengkapan" dihapus dari header tabel aset */}
               <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
                 <tr>
                   <th className="px-3 py-3 w-8"></th>
@@ -456,7 +447,6 @@ function ManajemenAset() {
                   <th className="px-3 py-3">Kategori</th>
                   <th className="px-3 py-3">NO.PR</th>
                   <th className="px-3 py-3">No. PO</th>
-                  <th className="px-3 py-3">Kelengkapan</th>
                   <th className="px-3 py-3 text-success">Stok Baik</th>
                   <th className="px-3 py-3 text-warning">Rusak Ringan</th>
                   <th className="px-3 py-3 text-destructive">Rusak Berat</th>
@@ -499,12 +489,7 @@ function ManajemenAset() {
                         <td className="px-3 py-3 font-mono text-xs">
                           {a.no_po ?? "—"}
                         </td>
-                        <td
-                          className="px-3 py-3 max-w-45 truncate"
-                          title={a.kelengkapan ?? ""}
-                        >
-                          {a.kelengkapan ?? "—"}
-                        </td>
+                        {/* ✅ FIX: kolom Kelengkapan (td) dihapus dari sini */}
                         <td className="px-3 py-3 text-success font-medium">
                           {s.good}
                         </td>
@@ -533,9 +518,10 @@ function ManajemenAset() {
                       </tr>
                       {isOpen && (
                         <tr className="bg-muted/20">
-                          <td colSpan={12} className="px-6 py-3">
+                          <td colSpan={11} className="px-6 py-3">
                             <div className="rounded-lg border bg-card">
                               <table className="w-full text-xs">
+                                {/* ✅ FIX: kolom "Kelengkapan" ditambahkan di tabel unit */}
                                 <thead className="text-muted-foreground">
                                   <tr className="border-b">
                                     <th className="px-3 py-2 text-left">
@@ -543,6 +529,9 @@ function ManajemenAset() {
                                     </th>
                                     <th className="px-3 py-2 text-left">
                                       Serial Number
+                                    </th>
+                                    <th className="px-3 py-2 text-left">
+                                      Kelengkapan
                                     </th>
                                     <th className="px-3 py-2 text-left">
                                       Status
@@ -563,6 +552,13 @@ function ManajemenAset() {
                                       </td>
                                       <td className="px-3 py-2 font-mono text-[10px]">
                                         {u.serial_number ?? "—"}
+                                      </td>
+                                      {/* ✅ NEW: td Kelengkapan per unit */}
+                                      <td
+                                        className="px-3 py-2 max-w-40 truncate"
+                                        title={u.kelengkapan ?? ""}
+                                      >
+                                        {u.kelengkapan ?? "—"}
                                       </td>
                                       <td className="px-3 py-2">
                                         <span
@@ -622,7 +618,7 @@ function ManajemenAset() {
                                   {aUnits.length === 0 && (
                                     <tr>
                                       <td
-                                        colSpan={5}
+                                        colSpan={6}
                                         className="px-3 py-3 text-center text-muted-foreground"
                                       >
                                         Tidak ada unit.
@@ -642,7 +638,6 @@ function ManajemenAset() {
             </table>
           </div>
 
-          {/* ✅ Pagination Component */}
           <Pagination
             page={pagination.page}
             totalPages={pagination.totalPages}
@@ -691,6 +686,8 @@ function Field({
   );
 }
 
+// ✅ FIX: EditAssetDialog — field kelengkapan (asset-level) dihapus,
+// addUnits sekarang bisa isi additionalKelengkapan per unit baru (opsional)
 function EditAssetDialog({
   asset,
   onClose,
@@ -708,9 +705,9 @@ function EditAssetDialog({
     type: asset.type ?? "",
     no_pr: asset.no_pr ?? "",
     no_po: asset.no_po ?? "",
-    kelengkapan: asset.kelengkapan ?? "",
     addUnits: 0,
     additionalSerialNumbers: [""],
+    additionalKelengkapan: [""], // ✅ NEW
   });
   const [saving, setSaving] = useState(false);
   const save = async () => {
@@ -725,9 +722,9 @@ function EditAssetDialog({
         type: f.type || null,
         no_pr: f.no_pr || null,
         no_po: f.no_po || null,
-        kelengkapan: f.kelengkapan || null,
         addUnits: f.addUnits,
         additionalSerialNumbers: f.additionalSerialNumbers.filter(Boolean),
+        additionalKelengkapan: f.additionalKelengkapan,
       });
       toast.success("Aset berhasil diperbarui");
       onClose();
@@ -744,6 +741,9 @@ function EditAssetDialog({
       additionalSerialNumbers: Array(newCount)
         .fill("")
         .map((_, i) => prev.additionalSerialNumbers[i] || ""),
+      additionalKelengkapan: Array(newCount)
+        .fill("")
+        .map((_, i) => prev.additionalKelengkapan[i] || ""),
     }));
   };
   return (
@@ -817,16 +817,8 @@ function EditAssetDialog({
               onChange={(e) => handleAddUnitsChange(Number(e.target.value))}
             />
           </Field>
-          <div className="sm:col-span-2">
-            <Field label="Kelengkapan">
-              <Textarea
-                rows={2}
-                value={f.kelengkapan}
-                onChange={(e) => setF({ ...f, kelengkapan: e.target.value })}
-              />
-            </Field>
-          </div>
-          {/* Serial Number inputs untuk unit tambahan */}
+          {/* ✅ FIX: Textarea "Kelengkapan" (asset-level) DIHAPUS dari sini */}
+
           {f.addUnits > 0 && (
             <div className="sm:col-span-2">
               <div className="border-t pt-3 mt-2">
@@ -852,6 +844,10 @@ function EditAssetDialog({
                     </div>
                   ))}
                 </div>
+                <p className="text-xs text-muted-foreground mt-3">
+                  💡 Kelengkapan unit baru dapat diisi lewat tombol{" "}
+                  <strong>Update</strong> pada unit setelah disimpan.
+                </p>
               </div>
             </div>
           )}
@@ -877,6 +873,7 @@ function EditAssetDialog({
   );
 }
 
+// ✅ FIX: EditUnitDialog — field Kelengkapan DITAMBAHKAN di sini
 function EditUnitDialog({
   unit,
   onClose,
@@ -886,6 +883,8 @@ function EditUnitDialog({
 }) {
   const [condition, setCondition] = useState(unit.condition);
   const [serial_number, setSerialNumber] = useState(unit.serial_number || "");
+  // ✅ NEW: state kelengkapan per unit
+  const [kelengkapan, setKelengkapan] = useState(unit.kelengkapan || "");
   const [saving, setSaving] = useState(false);
 
   const getAutoStatus = (cond: string): boolean => {
@@ -902,10 +901,12 @@ function EditUnitDialog({
   const save = async () => {
     try {
       setSaving(true);
+      // ✅ FIX: kirim kelengkapan ke endpoint updateUnit
       await api.patch(`/api/assets/units/${unit.id}`, {
         condition,
         is_available: autoAvailable,
         serial_number: serial_number || null,
+        kelengkapan: kelengkapan || null,
       });
       toast.success("Unit berhasil diperbarui");
       onClose();
@@ -946,7 +947,15 @@ function EditUnitDialog({
             />
           </Field>
 
-          {/* STATUS OTOMATIS - READ ONLY */}
+          {/* ✅ NEW: Field Kelengkapan per unit */}
+          <Field label="Kelengkapan">
+            <Input
+              value={kelengkapan}
+              onChange={(e) => setKelengkapan(e.target.value)}
+              placeholder="Cth: Charger, tas, kabel HDMI"
+            />
+          </Field>
+
           <Field label="Status (Otomatis)">
             <div
               className={cn(
@@ -964,7 +973,6 @@ function EditUnitDialog({
             </div>
           </Field>
 
-          {/* LOGIC INFO */}
           <div className="text-xs text-muted-foreground bg-muted/50 p-2 rounded">
             <p className="font-semibold mb-1">Logika Otomatis:</p>
             <ul className="space-y-0.5">

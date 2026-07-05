@@ -58,6 +58,7 @@ exports.getAllLoans = async (req, res) => {
       SELECT * FROM (
         SELECT DISTINCT ON (lr.requester_id, DATE(lr.borrow_date), lr.return_deadline)
           lr.id,
+          lr.loan_number,
           lr.requester_id,
           lr.quantity,
           lr.category,
@@ -155,8 +156,15 @@ exports.getLoanById = async (req, res) => {
 
 // ─── POST ajukan peminjaman baru ──────────────────────────────
 exports.createLoan = async (req, res) => {
-  const { asset_id, quantity, category, borrow_date, return_deadline, notes } =
-    req.body;
+  const {
+    asset_id,
+    quantity,
+    category,
+    borrow_date,
+    return_deadline,
+    notes,
+    loan_number, // ✅ NEW: dikirim frontend, sama untuk semua aset 1 submission
+  } = req.body;
 
   if (!asset_id || !quantity || !category || !borrow_date || !return_deadline)
     return res.status(400).json({ message: "Semua field wajib diisi" });
@@ -177,6 +185,16 @@ exports.createLoan = async (req, res) => {
   try {
     await client.query("BEGIN");
 
+    // ✅ NEW: pakai loan_number dari frontend kalau ada (multi-asset,
+    //    semua aset share 1 nomor). Kalau tidak dikirim (mis. request
+    //    langsung/testing), generate baru sebagai fallback.
+    let finalLoanNumber = loan_number;
+    if (!finalLoanNumber) {
+      const numRes = await client.query(
+        `SELECT next_loan_number() AS loan_number`,
+      );
+      finalLoanNumber = numRes.rows[0].loan_number;
+    }
     const stockRes = await client.query(
       `SELECT id FROM asset_units
         WHERE asset_id = $1 AND condition = 'good' AND loan_status = 'tersedia'
@@ -207,8 +225,9 @@ exports.createLoan = async (req, res) => {
       `INSERT INTO loan_requests
           (requester_id, asset_id, quantity, category,
             borrow_date, return_deadline, notes,
-            attachment_url, attachment_name, attachment_type, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            attachment_url, attachment_name, attachment_type, status,
+            loan_number)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         RETURNING *`,
       [
         req.user.userId,
@@ -222,6 +241,7 @@ exports.createLoan = async (req, res) => {
         attachment_name,
         attachment_type,
         initialStatus,
+        finalLoanNumber,
       ],
     );
 
@@ -275,9 +295,11 @@ exports.createLoan = async (req, res) => {
     }
 
     await client.query("COMMIT");
-    res
-      .status(201)
-      .json({ message: "Peminjaman berhasil diajukan", data: loan });
+    res.status(201).json({
+      message: "Peminjaman berhasil diajukan",
+      data: loan,
+      loan_number: finalLoanNumber, // ✅ NEW
+    });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("createLoan error:", err);
@@ -506,34 +528,43 @@ exports.getReturnPending = async (req, res) => {
 //   - Fix notif link → /pinjaman
 exports.confirmReturn = async (req, res) => {
   const { unit_conditions } = req.body;
+
+  // ✅ FIX 1: Validasi input dasar TANPA transaksi dulu
+  if (!unit_conditions || unit_conditions.length === 0) {
+    return res.status(400).json({ message: "unit_conditions harus ada" });
+  }
+
+  for (const uc of unit_conditions) {
+    if (!uc.asset_unit_id || !uc.return_condition) {
+      return res.status(400).json({
+        message: "Setiap unit harus punya asset_unit_id dan return_condition",
+      });
+    }
+  }
+
+  // ✅ FIX 2: Cek loan pakai pool biasa (bukan client), tidak butuh transaksi
+  const loanRes = await pool.query(
+    `SELECT lr.*, a.name AS asset_name
+      FROM loan_requests lr
+      JOIN assets a ON a.id = lr.asset_id
+      WHERE lr.id = $1 AND lr.status IN ('picked_up', 'approved_admin', 'overdue')`,
+    [req.params.id],
+  );
+
+  if (!loanRes.rows[0]) {
+    return res.status(400).json({
+      message: "Peminjaman tidak ditemukan atau sudah dikembalikan",
+    });
+  }
+
+  const loan = loanRes.rows[0];
+
+  // ✅ FIX 3: Baru BEGIN transaksi SETELAH semua validasi lolos.
+  // Dari sini, SATU-SATUNYA jalan keluar adalah COMMIT (sukses)
+  // atau ROLLBACK (di catch). Tidak ada early-return lagi.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-
-    const loanRes = await client.query(
-      `SELECT lr.*, a.name AS asset_name
-        FROM loan_requests lr
-        JOIN assets a ON a.id = lr.asset_id
-        WHERE lr.id = $1 AND lr.status IN ('picked_up', 'approved_admin', 'overdue')`,
-      [req.params.id],
-    );
-
-    if (!loanRes.rows[0])
-      return res.status(400).json({
-        message: "Peminjaman tidak ditemukan atau sudah dikembalikan",
-      });
-
-    const loan = loanRes.rows[0];
-
-    if (!unit_conditions || unit_conditions.length === 0)
-      return res.status(400).json({ message: "unit_conditions harus ada" });
-
-    for (const uc of unit_conditions) {
-      if (!uc.asset_unit_id || !uc.return_condition)
-        return res.status(400).json({
-          message: "Setiap unit harus punya asset_unit_id dan return_condition",
-        });
-    }
 
     // Update kondisi setiap unit yang dikembalikan
     for (const uc of unit_conditions) {
@@ -568,7 +599,7 @@ exports.confirmReturn = async (req, res) => {
       [loan.id],
     );
 
-    // ✅ FIX BARU: Auto-unlock user jika di-lock karena overdue
+    // Auto-unlock user jika di-lock karena overdue
     const profileRes = await client.query(
       `SELECT is_blocked, auto_locked FROM profiles WHERE id = $1`,
       [loan.requester_id],
@@ -588,7 +619,6 @@ exports.confirmReturn = async (req, res) => {
         [loan.requester_id],
       );
 
-      // Catat unlock di account_lock_log
       await client.query(
         `INSERT INTO account_lock_log
             (user_id, action, trigger_type, reason, unlocked_by)
@@ -600,7 +630,6 @@ exports.confirmReturn = async (req, res) => {
         ],
       );
 
-      // Notif ke user: akun dibuka kembali
       await sendNotif(
         client,
         loan.requester_id,
@@ -611,7 +640,6 @@ exports.confirmReturn = async (req, res) => {
       );
     }
 
-    // Notifikasi pengembalian ke peminjam
     await sendNotif(
       client,
       loan.requester_id,
@@ -662,6 +690,7 @@ exports.getAllLoansForReport = async (req, res) => {
       SELECT * FROM (
         SELECT DISTINCT ON (lr.requester_id, DATE(lr.borrow_date), lr.return_deadline)
           lr.id,
+          lr.loan_number,
           lr.requester_id,
           lr.quantity,
           lr.category,
@@ -831,6 +860,7 @@ exports.getRecentLoans = async (req, res) => {
     const query = `
       SELECT
         lr.id,
+        lr.loan_number,
         lr.quantity,
         lr.category,
         lr.status,
@@ -853,6 +883,21 @@ exports.getRecentLoans = async (req, res) => {
     res.json({ data: rows });
   } catch (err) {
     console.error("getRecentLoans error:", err);
+    res.status(500).json({ message: "Terjadi kesalahan server" });
+  }
+};
+// GET /api/loans/number/next — ambil 1 nomor peminjaman baru
+// Dipanggil SEKALI oleh frontend SEBELUM mulai submit form,
+// supaya semua aset dalam 1 submission (multi-asset) pakai
+// loan_number yang SAMA.
+exports.getNextLoanNumber = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT next_loan_number() AS loan_number`,
+    );
+    res.json({ data: { loan_number: rows[0].loan_number } });
+  } catch (err) {
+    console.error("getNextLoanNumber error:", err);
     res.status(500).json({ message: "Terjadi kesalahan server" });
   }
 };

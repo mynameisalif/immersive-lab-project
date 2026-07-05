@@ -8,6 +8,7 @@ export interface LoanPayload {
   return_deadline: string;
   dosen_id?: string | null;
   notes?: string | null;
+  loan_number?: string;
 }
 
 export interface UnitCondition {
@@ -36,6 +37,7 @@ export const createLoan = (data: LoanPayload, proposalFile?: File | null) => {
   return api.post("/api/loans", data);
 };
 
+export const getNextLoanNumber = () => api.get("/api/loans/number/next");
 export const uploadProposal = (loanId: string, file: File) => {
   const formData = new FormData();
   formData.append("proposal", file);

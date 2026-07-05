@@ -21,7 +21,7 @@ import {
   PackagePlus,
 } from "lucide-react";
 import { getAvailableAssets } from "../../services/asset.service";
-import { createLoan } from "../../services/loan.service";
+import { createLoan, getNextLoanNumber } from "../../services/loan.service";
 
 interface AssetOpt {
   asset_id: string;
@@ -209,10 +209,23 @@ export function LoanRequestForm({
     setLoading(true);
     setProgress({ current: 0, total: filledItems.length });
 
+    // ✅ NEW: Ambil 1 nomor peminjaman SEKALI di awal, supaya semua
+    //    aset dalam submission ini (multi-asset) pakai nomor yang SAMA.
+    let loanNumber: string | undefined;
+    try {
+      const numRes = await getNextLoanNumber();
+      loanNumber = numRes.data?.data?.loan_number;
+    } catch {
+      setLoading(false);
+      setProgress({ current: 0, total: 0 });
+      toast.error("Gagal membuat nomor peminjaman. Silakan coba lagi.");
+      return;
+    }
+
     let successCount = 0;
     const errors: string[] = [];
 
-    // ✅ Buat 1 loan_request per aset
+    // ✅ Buat 1 loan_request per aset — SEMUA pakai loanNumber yang sama
     for (let i = 0; i < filledItems.length; i++) {
       const item = filledItems[i];
       setProgress({ current: i + 1, total: filledItems.length });
@@ -226,6 +239,7 @@ export function LoanRequestForm({
             borrow_date: borrow,
             return_deadline: deadline,
             notes: notes || null,
+            loan_number: loanNumber, // ✅ NEW: sama untuk semua aset di batch ini
           },
           proposal ?? undefined,
         );

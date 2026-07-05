@@ -19,13 +19,17 @@ console.log(
   admin.map((f) => typeof f),
 );
 
-router.get("/", authenticate, loans.getAllLoans);
 router.get("/:id/units", authenticate, loans.getLoanUnits);
 router.get("/pickup/approved", authenticate, loans.getApprovedForPickup);
 router.get("/return/pending", authenticate, loans.getReturnPending);
 router.get("/report/all", authenticate, loans.getAllLoansForReport);
 router.get("/stats", authenticate, loans.getLoanStats); // ✅ TAMBAH INI
 router.get("/recent", authenticate, loans.getRecentLoans);
+router.get("/number/next", authenticate, loans.getNextLoanNumber);
+router.get("/", authenticate, loans.getAllLoans);
+
+
+
 router.get("/:id", authenticate, loans.getLoanById);
 
 router.post("/", authenticate, upload.single("proposal"), loans.createLoan);

@@ -37,6 +37,7 @@ interface Asset {
 //    (bukan per-aset lagi), lengkap dengan array `assets`.
 interface Loan {
   id: string;
+  loan_number?: string;
   notes: string;
   status: string;
   statusMapped: LoanStatus;
@@ -100,6 +101,7 @@ function Pinjaman() {
       //    dalam peminjaman itu.
       const data: Loan[] = (res.data?.data ?? []).map((r: any) => ({
         id: r.id,
+        loan_number: r.loan_number ?? null,
         notes: r.notes ?? "",
         status: r.status,
         statusMapped: mapStatus(r.status),
@@ -264,7 +266,7 @@ function Pinjaman() {
                       return (
                         <tr key={row.id} className="hover:bg-muted/30">
                           <td className="px-4 py-3 font-mono text-xs">
-                            {row.id.slice(0, 8)}
+                            {row.loan_number ?? row.id.slice(0, 8)}
                           </td>
                           {showPeminjam && (
                             <td className="px-4 py-3">{row.requester_name}</td>
