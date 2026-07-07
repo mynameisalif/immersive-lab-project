@@ -34,25 +34,20 @@ export const Route = createFileRoute("/_app/pengambilan")({
 });
 
 // ── Types ─────────────────────────────────────────────────────
-interface LoanItem {
-  id: string;
-  asset_name: string;
+// ✅ Asset item dalam batch — punya loan_id untuk API call per-aset
+interface AssetItem {
+  loan_id: string;
+  asset_id: string;
+  name: string;
   merk: string | null;
   type: string | null;
   quantity: number;
-  requester_name: string;
-  nim_nip: string | null;
-  requester_role: string;
-  borrow_date: string;
-  return_deadline: string;
-  category: string;
-  notes: string | null;
-  status: string;
-  created_at: string;
 }
 
-interface LoanGroup {
-  groupKey: string;
+// ✅ Row = 1 baris per BATCH (sudah digrouping backend)
+interface LoanRow {
+  id: string;
+  loan_number: string | null;
   requester_name: string;
   nim_nip: string | null;
   requester_role: string;
@@ -62,7 +57,8 @@ interface LoanGroup {
   category: string;
   notes: string | null;
   created_at: string;
-  items: LoanItem[];
+  assets: AssetItem[];
+  asset_count: number;
 }
 
 interface PaginationData {
@@ -73,47 +69,6 @@ interface PaginationData {
 }
 
 // ── Helpers ───────────────────────────────────────────────────
-const GROUP_WINDOW_MS = 10_000;
-
-function groupLoans(items: LoanItem[]): LoanGroup[] {
-  const sorted = [...items].sort(
-    (a, b) =>
-      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-  );
-  const groups: LoanGroup[] = [];
-  for (const item of sorted) {
-    const existing = groups.find(
-      (g) =>
-        g.requester_id === item.requester_name &&
-        g.borrow_date === item.borrow_date &&
-        g.return_deadline === item.return_deadline &&
-        g.category === item.category &&
-        Math.abs(
-          new Date(g.created_at).getTime() -
-            new Date(item.created_at).getTime(),
-        ) <= GROUP_WINDOW_MS,
-    );
-    if (existing) {
-      existing.items.push(item);
-    } else {
-      groups.push({
-        groupKey: item.id,
-        requester_name: item.requester_name,
-        nim_nip: item.nim_nip,
-        requester_role: item.requester_role,
-        requester_id: item.requester_name,
-        borrow_date: item.borrow_date,
-        return_deadline: item.return_deadline,
-        category: item.category,
-        notes: item.notes,
-        created_at: item.created_at,
-        items: [item],
-      });
-    }
-  }
-  return groups;
-}
-
 const roleLabel: Record<string, string> = {
   student: "Mahasiswa",
   dosen: "Dosen",
@@ -133,23 +88,22 @@ const formatDate = (d: string) =>
     year: "numeric",
   });
 
-const getMerkLabel = (item: LoanItem) => {
-  const parts = [item.merk, item.type].filter(Boolean).join(" ");
-  return parts || item.asset_name;
+const getAssetLabel = (a: AssetItem) => {
+  const parts = [a.merk, a.type].filter(Boolean).join(" ");
+  return parts || a.name;
 };
 
 // ── Component ─────────────────────────────────────────────────
 function PengambilanPage() {
   const { role } = useAuth();
   const navigate = useNavigate();
-  const [loans, setLoans] = useState<LoanItem[]>([]);
+  const [rows, setRows] = useState<LoanRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [selectedGroup, setSelectedGroup] = useState<LoanGroup | null>(null);
+  const [selectedRow, setSelectedRow] = useState<LoanRow | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  // ✅ TAMBAH: Pagination state
   const LIMIT = 10;
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationData>({
@@ -163,21 +117,33 @@ function PengambilanPage() {
     if (role && role !== "admin") navigate({ to: "/dashboard" });
   }, [role]);
 
-  // ✅ UPDATE: Load function dengan endpoint baru + pagination
+  // ✅ Load — backend sudah kirim 1 baris per batch, tidak perlu groupLoans manual
   const loadLoans = async (currentPage = page) => {
     try {
       setLoading(true);
-      // ✅ FIX: Call endpoint baru /api/loans/pickup/approved dengan pagination params
       const res = await getApprovedForPickup({
         page: currentPage,
         limit: LIMIT,
       });
+      const data = res.data?.data ?? [];
 
-      // Data sudah di-filter backend (hanya status approved_admin)
-      const all: LoanItem[] = res.data?.data ?? [];
-      setLoans(all);
+      const mapped: LoanRow[] = data.map((r: any) => ({
+        id: r.id,
+        loan_number: r.loan_number ?? null,
+        requester_name: r.requester_name ?? "—",
+        nim_nip: r.nim_nip ?? null,
+        requester_role: r.requester_role ?? "",
+        requester_id: r.requester_id,
+        borrow_date: r.borrow_date,
+        return_deadline: r.return_deadline,
+        category: r.category ?? "",
+        notes: r.notes ?? null,
+        created_at: r.created_at,
+        assets: Array.isArray(r.assets) ? r.assets : [],
+        asset_count: r.asset_count ?? 1,
+      }));
 
-      // ✅ FIX: Set pagination dari response
+      setRows(mapped);
       setPagination(
         res.data?.pagination ?? {
           total: 0,
@@ -189,60 +155,52 @@ function PengambilanPage() {
       setPage(currentPage);
     } catch {
       toast.error("Gagal memuat data peminjaman");
-      setLoans([]);
-      setPagination({
-        total: 0,
-        page: 1,
-        limit: LIMIT,
-        totalPages: 0,
-      });
+      setRows([]);
+      setPagination({ total: 0, page: 1, limit: LIMIT, totalPages: 0 });
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ FIX: useEffect trigger saat page berubah
   useEffect(() => {
     void loadLoans(page);
   }, [page]);
 
-  // ✅ TAMBAH: Handler pagination
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
 
-  const openConfirm = (group: LoanGroup) => {
-    setSelectedGroup(group);
+  const openConfirm = (row: LoanRow) => {
+    setSelectedRow(row);
     setDialogOpen(true);
   };
 
-  // ✅ Konfirmasi semua loan dalam group
-  const handleConfirmGroup = async () => {
-    if (!selectedGroup) return;
+  // ✅ Konfirmasi semua asset (per loan_id) dalam batch
+  const handleConfirmBatch = async () => {
+    if (!selectedRow) return;
     try {
       setConfirming(true);
       let successCount = 0;
 
-      for (const loan of selectedGroup.items) {
+      for (const asset of selectedRow.assets) {
         try {
-          await api.patch(`/api/loans/${loan.id}/pickup`);
+          await api.patch(`/api/loans/${asset.loan_id}/pickup`);
           successCount++;
         } catch (err: any) {
           toast.error(
-            `Gagal konfirmasi ${getMerkLabel(loan)}: ${err.response?.data?.message ?? "Error"}`,
+            `Gagal konfirmasi ${getAssetLabel(asset)}: ${err.response?.data?.message ?? "Error"}`,
           );
         }
       }
 
       if (successCount > 0) {
         toast.success(
-          selectedGroup.items.length > 1
+          selectedRow.assets.length > 1
             ? `${successCount} aset berhasil dikonfirmasi pengambilannya!`
-            : `Pengambilan "${getMerkLabel(selectedGroup.items[0])}" berhasil dikonfirmasi!`,
+            : `Pengambilan "${getAssetLabel(selectedRow.assets[0])}" berhasil dikonfirmasi!`,
         );
         setDialogOpen(false);
-        setSelectedGroup(null);
-        // ✅ FIX: Reload dengan halaman saat ini
+        setSelectedRow(null);
         await loadLoans(page);
       }
     } finally {
@@ -250,17 +208,17 @@ function PengambilanPage() {
     }
   };
 
-  // Filter by search
-  const allGrouped = groupLoans(loans);
-  const filtered = allGrouped.filter((g) => {
+  // Filter by search (client-side, di halaman berjalan)
+  const filtered = rows.filter((row) => {
     const q = search.toLowerCase();
     return (
       !q ||
-      g.requester_name.toLowerCase().includes(q) ||
-      g.items.some(
-        (i) =>
-          getMerkLabel(i).toLowerCase().includes(q) ||
-          (g.nim_nip ?? "").includes(q),
+      row.requester_name.toLowerCase().includes(q) ||
+      (row.loan_number ?? "").toLowerCase().includes(q) ||
+      row.assets.some(
+        (a) =>
+          getAssetLabel(a).toLowerCase().includes(q) ||
+          (row.nim_nip ?? "").includes(q),
       )
     );
   });
@@ -288,12 +246,12 @@ function PengambilanPage() {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Cari nama, aset, NIM/NIP…"
+          placeholder="Cari nama, aset, NIM/NIP, ID…"
           className="pl-9"
         />
       </div>
 
-      {!loading && loans.length > 0 && (
+      {!loading && rows.length > 0 && (
         <p className="mt-3 text-sm text-muted-foreground">
           {filtered.length} pengajuan menunggu konfirmasi pengambilan
         </p>
@@ -310,12 +268,12 @@ function PengambilanPage() {
           <EmptyState
             icon={CheckCircle2}
             title={
-              loans.length === 0
+              rows.length === 0
                 ? "Tidak ada pengambilan pending"
                 : "Tidak ada hasil"
             }
             description={
-              loans.length === 0
+              rows.length === 0
                 ? "Belum ada peminjaman yang menunggu konfirmasi pengambilan."
                 : "Coba kata kunci lain."
             }
@@ -324,31 +282,38 @@ function PengambilanPage() {
       ) : (
         <>
           <div className="mt-4 space-y-3">
-            {filtered.map((group) => {
-              const isMulti = group.items.length > 1;
+            {filtered.map((row) => {
+              const isMulti = row.assets.length > 1;
               return (
                 <div
-                  key={group.groupKey}
+                  key={row.id}
                   className="rounded-xl border bg-card p-5 shadow-sm transition hover:shadow-md"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div className="min-w-0 flex-1 space-y-2">
+                      {/* ✅ ID/Nomor peminjaman */}
+                      {row.loan_number && (
+                        <p className="font-mono text-xs text-muted-foreground">
+                          {row.loan_number}
+                        </p>
+                      )}
+
                       {/* Aset */}
                       {isMulti ? (
                         <div>
                           <div className="flex items-center gap-1.5 mb-1">
                             <Package className="size-3.5 text-muted-foreground" />
                             <span className="text-xs font-medium text-muted-foreground">
-                              {group.items.length} aset dalam satu pengajuan:
+                              {row.assets.length} aset dalam satu pengajuan:
                             </span>
                           </div>
                           <ul className="ml-5 space-y-0.5">
-                            {group.items.map((item) => (
+                            {row.assets.map((asset) => (
                               <li
-                                key={item.id}
+                                key={asset.loan_id}
                                 className="font-semibold text-sm"
                               >
-                                • {getMerkLabel(item)} × {item.quantity} unit
+                                • {getAssetLabel(asset)} × {asset.quantity} unit
                               </li>
                             ))}
                           </ul>
@@ -360,10 +325,10 @@ function PengambilanPage() {
                           </div>
                           <div>
                             <p className="font-semibold">
-                              {getMerkLabel(group.items[0])}
+                              {getAssetLabel(row.assets[0])}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {group.items[0].quantity} unit
+                              {row.assets[0].quantity} unit
                             </p>
                           </div>
                         </div>
@@ -374,14 +339,14 @@ function PengambilanPage() {
                         <User className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                         <div>
                           <p className="font-medium text-sm">
-                            {group.requester_name}
+                            {row.requester_name}
                           </p>
                           <p className="text-xs text-muted-foreground font-mono">
-                            {group.nim_nip ?? "NIM/NIP belum diisi"}
+                            {row.nim_nip ?? "NIM/NIP belum diisi"}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {roleLabel[group.requester_role] ??
-                              group.requester_role}
+                            {roleLabel[row.requester_role] ??
+                              row.requester_role}
                           </p>
                         </div>
                       </div>
@@ -391,11 +356,11 @@ function PengambilanPage() {
                         <Calendar className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                         <div>
                           <p className="text-sm">
-                            {formatDate(group.borrow_date)}
+                            {formatDate(row.borrow_date)}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            Kembali: {formatDate(group.return_deadline)} ·{" "}
-                            {categoryLabel[group.category] ?? group.category}
+                            Kembali: {formatDate(row.return_deadline)} ·{" "}
+                            {categoryLabel[row.category] ?? row.category}
                           </p>
                         </div>
                       </div>
@@ -403,17 +368,17 @@ function PengambilanPage() {
 
                     {/* Tombol */}
                     <div className="shrink-0 self-center">
-                      <Button onClick={() => openConfirm(group)}>
+                      <Button onClick={() => openConfirm(row)}>
                         <CheckCircle2 className="mr-2 size-4" />
                         Konfirmasi
-                        {isMulti ? ` (${group.items.length} Aset)` : ""}
+                        {isMulti ? ` (${row.assets.length} Aset)` : ""}
                       </Button>
                     </div>
                   </div>
 
-                  {group.notes && (
+                  {row.notes && (
                     <p className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                      📝 {group.notes}
+                      📝 {row.notes}
                     </p>
                   )}
                 </div>
@@ -421,7 +386,6 @@ function PengambilanPage() {
             })}
           </div>
 
-          {/* ✅ TAMBAH: Pagination Component */}
           <Pagination
             page={pagination.page}
             totalPages={pagination.totalPages}
@@ -446,25 +410,29 @@ function PengambilanPage() {
             </DialogDescription>
           </DialogHeader>
 
-          {selectedGroup && (
+          {selectedRow && (
             <div className="space-y-4 py-1">
-              {/* Ringkasan */}
               <div className="rounded-lg border bg-muted/30 p-4 space-y-3 text-sm">
-                {/* Aset */}
-                {selectedGroup.items.length > 1 ? (
+                {selectedRow.loan_number && (
+                  <p className="font-mono text-xs text-muted-foreground">
+                    {selectedRow.loan_number}
+                  </p>
+                )}
+
+                {selectedRow.assets.length > 1 ? (
                   <div className="flex gap-3 items-start">
                     <Package className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                     <div>
                       <p className="font-semibold">
-                        {selectedGroup.items.length} Aset:
+                        {selectedRow.assets.length} Aset:
                       </p>
                       <ul className="mt-0.5 space-y-0.5">
-                        {selectedGroup.items.map((i) => (
+                        {selectedRow.assets.map((a) => (
                           <li
-                            key={i.id}
+                            key={a.loan_id}
                             className="text-xs text-muted-foreground"
                           >
-                            • {getMerkLabel(i)} × {i.quantity} unit
+                            • {getAssetLabel(a)} × {a.quantity} unit
                           </li>
                         ))}
                       </ul>
@@ -475,10 +443,10 @@ function PengambilanPage() {
                     <Package className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                     <div>
                       <p className="font-semibold">
-                        {getMerkLabel(selectedGroup.items[0])}
+                        {getAssetLabel(selectedRow.assets[0])}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {selectedGroup.items[0].quantity} unit
+                        {selectedRow.assets[0].quantity} unit
                       </p>
                     </div>
                   </div>
@@ -488,10 +456,10 @@ function PengambilanPage() {
                   <User className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                   <div>
                     <p className="font-semibold">
-                      {selectedGroup.requester_name}
+                      {selectedRow.requester_name}
                     </p>
                     <p className="text-xs text-muted-foreground font-mono">
-                      NIM/NIP: {selectedGroup.nim_nip ?? "—"}
+                      NIM/NIP: {selectedRow.nim_nip ?? "—"}
                     </p>
                   </div>
                 </div>
@@ -499,13 +467,12 @@ function PengambilanPage() {
                 <div className="flex gap-3 items-start">
                   <Calendar className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                   <p>
-                    {formatDate(selectedGroup.borrow_date)} s.d.{" "}
-                    {formatDate(selectedGroup.return_deadline)}
+                    {formatDate(selectedRow.borrow_date)} s.d.{" "}
+                    {formatDate(selectedRow.return_deadline)}
                   </p>
                 </div>
               </div>
 
-              {/* Checklist */}
               <div className="space-y-2">
                 <p className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
                   <ClipboardList className="size-4" />
@@ -536,7 +503,7 @@ function PengambilanPage() {
             >
               Batal
             </Button>
-            <Button onClick={handleConfirmGroup} disabled={confirming}>
+            <Button onClick={handleConfirmBatch} disabled={confirming}>
               {confirming ? (
                 <>
                   <Loader2 className="mr-2 size-4 animate-spin" />

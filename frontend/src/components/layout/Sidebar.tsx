@@ -54,7 +54,7 @@ const dosenNav: Item[] = [
   { to: "/pinjaman", label: "Peminjaman", icon: ClipboardList },
   { to: "/status-approval", label: "Status Approval", icon: ListChecks },
   // { to: "/pengembalian", label: "Pengembalian", icon: ArrowLeftRight },
-  { to: "/laporan", label: "Laporan Peminjaman", icon: BarChart3 },
+  // { to: "/laporan", label: "Laporan Peminjaman", icon: BarChart3 },
   { to: "/pesan", label: "Pesan", icon: MessageSquare },
 ];
 

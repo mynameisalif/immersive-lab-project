@@ -412,45 +412,83 @@ exports.confirmPickup = async (req, res) => {
 // Endpoint khusus untuk halaman pengambilan
 // Hanya admin yang bisa akses, menampilkan SEMUA loans dengan status approved_admin
 exports.getApprovedForPickup = async (req, res) => {
-  // ✅ FIX 1: Pagination params
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(50, parseInt(req.query.limit) || 10);
   const offset = (page - 1) * limit;
 
   try {
-    // ✅ FIX 2: Cek role (hanya admin)
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Akses ditolak" });
     }
 
-    // ✅ FIX 3: COUNT SEMUA loans dengan status approved_admin
     const countQuery = `
-      SELECT COUNT(*) FROM loan_requests
-      WHERE status = 'approved_admin'`;
+      SELECT COUNT(*) FROM (
+        SELECT DISTINCT lr.requester_id, DATE(lr.borrow_date), lr.return_deadline
+        FROM loan_requests lr
+        WHERE lr.status = 'approved_admin'
+      ) grouped`;
+    const countRes = await pool.query(countQuery);
+    const total = parseInt(countRes.rows[0].count) || 0;
 
-    // ✅ FIX 4: SELECT SEMUA loans dengan status approved_admin + LIMIT/OFFSET
-    const query = `
-      SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-             p.full_name AS requester_name, p.nim_nip,
-             ur.role AS requester_role
-      FROM loan_requests lr
-      JOIN assets a ON a.id = lr.asset_id
-      JOIN profiles p ON p.id = lr.requester_id
-      JOIN user_roles ur ON ur.user_id = p.id
-      WHERE lr.status = 'approved_admin'
-      ORDER BY lr.created_at ASC
+    const dataQuery = `
+      SELECT * FROM (
+        SELECT DISTINCT ON (lr.requester_id, DATE(lr.borrow_date), lr.return_deadline)
+          lr.id,
+          lr.loan_number,
+          lr.requester_id,
+          lr.quantity,
+          lr.category,
+          lr.borrow_date,
+          lr.return_deadline,
+          lr.status,
+          lr.notes,
+          lr.picked_up_at,
+          lr.returned_at,
+          lr.created_at,
+          p.full_name AS requester_name,
+          p.nim_nip,
+          ur.role AS requester_role,
+          batch.assets,
+          batch.asset_count
+        FROM loan_requests lr
+        JOIN profiles p ON p.id = lr.requester_id
+        JOIN user_roles ur ON ur.user_id = lr.requester_id
+        JOIN LATERAL (
+          SELECT
+            json_agg(json_build_object(
+              'loan_id', lr2.id,
+              'asset_id', a.id,
+              'name', a.name,
+              'merk', a.merk,
+              'type', a.type,
+              'quantity', lr2.quantity
+            )) AS assets,
+            COUNT(*) AS asset_count
+          FROM loan_requests lr2
+          JOIN assets a ON a.id = lr2.asset_id
+          WHERE lr2.requester_id = lr.requester_id
+            AND DATE(lr2.borrow_date) = DATE(lr.borrow_date)
+            AND lr2.return_deadline = lr.return_deadline
+            AND lr2.status = 'approved_admin'
+        ) batch ON true
+        WHERE lr.status = 'approved_admin'
+        ORDER BY lr.requester_id, DATE(lr.borrow_date), lr.return_deadline, lr.created_at DESC
+      ) grouped_loans
+      ORDER BY grouped_loans.created_at ASC
       LIMIT $1 OFFSET $2`;
 
-    // Count total
-    const countRes = await pool.query(countQuery);
-    const total = parseInt(countRes.rows[0].count);
+    const { rows } = await pool.query(dataQuery, [limit, offset]);
 
-    // Execute dengan LIMIT & OFFSET
-    const { rows } = await pool.query(query, [limit, offset]);
+    const transformedRows = rows.map((row) => ({
+      ...row,
+      asset_name:
+        row.assets && row.assets.length > 0 ? row.assets[0].name : "—",
+      merk: row.assets && row.assets.length > 0 ? row.assets[0].merk : null,
+      type: row.assets && row.assets.length > 0 ? row.assets[0].type : null,
+    }));
 
-    // Return dengan pagination
     res.json({
-      data: rows,
+      data: transformedRows,
       pagination: {
         total,
         page,
@@ -469,45 +507,87 @@ exports.getApprovedForPickup = async (req, res) => {
 // Hanya admin yang bisa akses, menampilkan SEMUA loans dengan status picked_up/overdue
 // Support pagination
 exports.getReturnPending = async (req, res) => {
-  // ✅ FIX 1: Pagination params
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(50, parseInt(req.query.limit) || 10);
   const offset = (page - 1) * limit;
 
   try {
-    // ✅ FIX 2: Cek role (hanya admin)
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Akses ditolak" });
     }
 
-    // ✅ FIX 3: COUNT SEMUA loans dengan status picked_up atau overdue
+    // ✅ COUNT: unique batch (bukan per-row lagi)
     const countQuery = `
-      SELECT COUNT(*) FROM loan_requests
-      WHERE status IN ('picked_up', 'overdue')`;
+      SELECT COUNT(*) FROM (
+        SELECT DISTINCT lr.requester_id, DATE(lr.borrow_date), lr.return_deadline
+        FROM loan_requests lr
+        WHERE lr.status IN ('picked_up', 'overdue')
+      ) grouped`;
+    const countRes = await pool.query(countQuery);
+    const total = parseInt(countRes.rows[0].count) || 0;
 
-    // ✅ FIX 4: SELECT SEMUA loans dengan status picked_up/overdue + LIMIT/OFFSET
-    const query = `
-      SELECT lr.*, a.name AS asset_name, a.merk, a.type,
-             p.full_name AS requester_name, p.nim_nip,
-             ur.role AS requester_role
-      FROM loan_requests lr
-      JOIN assets a ON a.id = lr.asset_id
-      JOIN profiles p ON p.id = lr.requester_id
-      JOIN user_roles ur ON ur.user_id = p.id
-      WHERE lr.status IN ('picked_up', 'overdue')
-      ORDER BY lr.return_deadline ASC, lr.created_at ASC
+    // ✅ DATA: DISTINCT ON representative row + LATERAL JOIN agregasi assets
+    //    Batch subquery (lr2) DIFILTER status yang sama supaya hanya
+    //    aset yang masih perlu dikembalikan yang muncul dalam grup.
+    const dataQuery = `
+      SELECT * FROM (
+        SELECT DISTINCT ON (lr.requester_id, DATE(lr.borrow_date), lr.return_deadline)
+          lr.id,
+          lr.loan_number,
+          lr.requester_id,
+          lr.quantity,
+          lr.category,
+          lr.borrow_date,
+          lr.return_deadline,
+          lr.status,
+          lr.notes,
+          lr.picked_up_at,
+          lr.returned_at,
+          lr.created_at,
+          p.full_name AS requester_name,
+          p.nim_nip,
+          ur.role AS requester_role,
+          batch.assets,
+          batch.asset_count
+        FROM loan_requests lr
+        JOIN profiles p ON p.id = lr.requester_id
+        JOIN user_roles ur ON ur.user_id = lr.requester_id
+        JOIN LATERAL (
+          SELECT
+            json_agg(json_build_object(
+              'loan_id', lr2.id,
+              'asset_id', a.id,
+              'name', a.name,
+              'merk', a.merk,
+              'type', a.type,
+              'quantity', lr2.quantity
+            )) AS assets,
+            COUNT(*) AS asset_count
+          FROM loan_requests lr2
+          JOIN assets a ON a.id = lr2.asset_id
+          WHERE lr2.requester_id = lr.requester_id
+            AND DATE(lr2.borrow_date) = DATE(lr.borrow_date)
+            AND lr2.return_deadline = lr.return_deadline
+            AND lr2.status IN ('picked_up', 'overdue')
+        ) batch ON true
+        WHERE lr.status IN ('picked_up', 'overdue')
+        ORDER BY lr.requester_id, DATE(lr.borrow_date), lr.return_deadline, lr.created_at DESC
+      ) grouped_loans
+      ORDER BY grouped_loans.return_deadline ASC, grouped_loans.created_at ASC
       LIMIT $1 OFFSET $2`;
 
-    // Count total
-    const countRes = await pool.query(countQuery);
-    const total = parseInt(countRes.rows[0].count);
+    const { rows } = await pool.query(dataQuery, [limit, offset]);
 
-    // Execute dengan LIMIT & OFFSET
-    const { rows } = await pool.query(query, [limit, offset]);
+    const transformedRows = rows.map((row) => ({
+      ...row,
+      asset_name:
+        row.assets && row.assets.length > 0 ? row.assets[0].name : "—",
+      merk: row.assets && row.assets.length > 0 ? row.assets[0].merk : null,
+      type: row.assets && row.assets.length > 0 ? row.assets[0].type : null,
+    }));
 
-    // Return dengan pagination
     res.json({
-      data: rows,
+      data: transformedRows,
       pagination: {
         total,
         page,

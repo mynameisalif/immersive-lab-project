@@ -28,39 +28,39 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { getReturnPending } from "@/services/loan.service";
+
 export const Route = createFileRoute("/_app/pengembalian")({
   component: Pengembalian,
   head: () => ({ meta: [{ title: "Pengembalian · MNP Lab Loan" }] }),
 });
 
 // ── Types ─────────────────────────────────────────────────────
+// ✅ Asset item dalam satu batch — sekarang punya loan_id (untuk API call)
+interface AssetItem {
+  loan_id: string;
+  asset_id: string;
+  name: string;
+  merk: string | null;
+  type: string | null;
+  quantity: number;
+}
+
+// ✅ Row = 1 baris per BATCH (sudah digrouping backend via DISTINCT ON + LATERAL)
 interface Row {
   id: string;
+  loan_number: string | null;
   status: string;
   notes: string;
-  asset_name: string;
   borrow_date: string;
   return_deadline: string;
   returned_at?: string | null;
-  merk?: string | null;
-  type?: string | null;
-  requester_name?: string;
-  requester_id?: string;
-  nim_nip?: string | null;
-  quantity?: number;
-  created_at: string;
-  category?: string;
-}
-
-interface RowGroup {
-  groupKey: string;
-  requester_id: string;
   requester_name: string;
+  requester_id: string;
   nim_nip: string | null;
-  borrow_date: string;
-  return_deadline: string;
+  category: string;
   created_at: string;
-  items: Row[];
+  assets: AssetItem[];
+  asset_count: number;
 }
 
 interface UnitDetail {
@@ -78,43 +78,6 @@ interface PaginationData {
 }
 
 // ── Helpers ───────────────────────────────────────────────────
-const GROUP_WINDOW_MS = 10_000;
-
-function groupRows(items: Row[]): RowGroup[] {
-  const sorted = [...items].sort(
-    (a, b) =>
-      new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-  );
-  const groups: RowGroup[] = [];
-  for (const item of sorted) {
-    const existing = groups.find(
-      (g) =>
-        g.requester_id === item.requester_id &&
-        g.borrow_date === item.borrow_date &&
-        g.return_deadline === item.return_deadline &&
-        Math.abs(
-          new Date(g.created_at).getTime() -
-            new Date(item.created_at).getTime(),
-        ) <= GROUP_WINDOW_MS,
-    );
-    if (existing) {
-      existing.items.push(item);
-    } else {
-      groups.push({
-        groupKey: item.id,
-        requester_id: item.requester_id ?? "",
-        requester_name: item.requester_name ?? "—",
-        nim_nip: item.nim_nip ?? null,
-        borrow_date: item.borrow_date,
-        return_deadline: item.return_deadline,
-        created_at: item.created_at,
-        items: [item],
-      });
-    }
-  }
-  return groups;
-}
-
 const mapStatus = (s: string): LoanStatus => {
   const map: Record<string, LoanStatus> = {
     picked_up: "picked_up",
@@ -131,9 +94,9 @@ const formatDate = (d: string) => {
   return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()}`;
 };
 
-const getMerkLabel = (r: Row) => {
-  const parts = [r.merk, r.type].filter(Boolean).join(" ");
-  return parts || r.asset_name;
+const getAssetLabel = (a: AssetItem) => {
+  const parts = [a.merk, a.type].filter(Boolean).join(" ");
+  return parts || a.name;
 };
 
 const isOverdue = (deadline: string) => new Date(deadline) < new Date();
@@ -144,7 +107,6 @@ function Pengembalian() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // ✅ TAMBAH: Pagination state
   const LIMIT = 10;
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationData>({
@@ -155,10 +117,10 @@ function Pengembalian() {
   });
 
   // Dialog state
-  const [selectedGroup, setSelectedGroup] = useState<RowGroup | null>(null);
-  const [groupUnits, setGroupUnits] = useState<Record<string, UnitDetail[]>>(
+  const [selectedRow, setSelectedRow] = useState<Row | null>(null);
+  const [assetUnits, setAssetUnits] = useState<Record<string, UnitDetail[]>>(
     {},
-  );
+  ); // key = loan_id
   const [unitConditions, setUnitConditions] = useState<Record<string, string>>(
     {},
   );
@@ -166,63 +128,33 @@ function Pengembalian() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingUnits, setLoadingUnits] = useState(false);
 
-  // ✅ UPDATE: Load function dengan endpoint baru + pagination
+  // ✅ Load — backend sudah kirim 1 baris per batch, tidak perlu grouping manual lagi
   const load = async (currentPage = page) => {
     try {
       setLoading(true);
 
-      let res;
+      let mapped: Row[] = [];
+
       if (role === "admin") {
-        // ✅ FIX: Admin call endpoint baru /api/loans/return/pending dengan pagination
-        res = await getReturnPending({
-          page: currentPage,
-          limit: LIMIT,
-        });
-      } else {
-        // Student/dosen call getLoans dengan filter client-side (sudah ada logic)
-        res = await api.get("/api/loans");
-      }
-
-      const data = res.data?.data ?? [];
-
-      // ✅ FIX: hanya picked_up dan overdue
-      let filtered: Row[] = data.filter((r: any) =>
-        ["picked_up", "overdue"].includes(r.status),
-      );
-
-      // Student filter: hanya loans milik mereka
-      if (role === "student") {
-        filtered = filtered.filter((r: any) => r.requester_id === user?.id);
-      }
-
-      const mapped: Row[] = filtered
-        .map((r: any) => ({
+        const res = await getReturnPending({ page: currentPage, limit: LIMIT });
+        const data = res.data?.data ?? [];
+        mapped = data.map((r: any) => ({
           id: r.id,
+          loan_number: r.loan_number ?? null,
           status: r.status,
           notes: r.notes ?? "—",
-          asset_name: r.asset_name ?? "—",
           borrow_date: r.borrow_date,
           return_deadline: r.return_deadline,
           returned_at: r.returned_at ?? null,
-          merk: r.merk ?? null,
-          type: r.type ?? null,
           requester_name: r.requester_name ?? "—",
           requester_id: r.requester_id,
           nim_nip: r.nim_nip ?? null,
-          quantity: r.quantity ?? 1,
-          created_at: r.created_at,
           category: r.category ?? "",
-        }))
-        .sort(
-          (a: Row, b: Row) =>
-            new Date(a.return_deadline).getTime() -
-            new Date(b.return_deadline).getTime(),
-        );
+          created_at: r.created_at,
+          assets: Array.isArray(r.assets) ? r.assets : [],
+          asset_count: r.asset_count ?? 1,
+        }));
 
-      setRows(mapped);
-
-      // ✅ FIX: Set pagination hanya untuk admin (dari endpoint baru)
-      if (role === "admin") {
         setPagination(
           res.data?.pagination ?? {
             total: 0,
@@ -233,76 +165,111 @@ function Pengembalian() {
         );
         setPage(currentPage);
       } else {
-        // Student/dosen: client-side pagination (jika perlu bisa ditambah)
+        // Student/dosen non-kaprodi: getLoans biasa (belum ada endpoint grouped khusus)
+        const res = await api.get("/api/loans");
+        const data = res.data?.data ?? [];
+        let filtered = data.filter((r: any) =>
+          ["picked_up", "overdue"].includes(r.status),
+        );
+        if (role === "student") {
+          filtered = filtered.filter((r: any) => r.requester_id === user?.id);
+        }
+        // Fallback: setiap row jadi 1 "batch" berisi 1 asset (belum ada grouping backend untuk non-admin)
+        mapped = filtered.map((r: any) => ({
+          id: r.id,
+          loan_number: r.loan_number ?? null,
+          status: r.status,
+          notes: r.notes ?? "—",
+          borrow_date: r.borrow_date,
+          return_deadline: r.return_deadline,
+          returned_at: r.returned_at ?? null,
+          requester_name: r.requester_name ?? "—",
+          requester_id: r.requester_id,
+          nim_nip: r.nim_nip ?? null,
+          category: r.category ?? "",
+          created_at: r.created_at,
+          assets: [
+            {
+              loan_id: r.id,
+              asset_id: r.asset_id,
+              name: r.asset_name ?? "—",
+              merk: r.merk ?? null,
+              type: r.type ?? null,
+              quantity: r.quantity ?? 1,
+            },
+          ],
+          asset_count: 1,
+        }));
         setPagination({
-          total: filtered.length,
+          total: mapped.length,
           page: 1,
           limit: LIMIT,
           totalPages: 1,
         });
       }
+
+      mapped.sort(
+        (a, b) =>
+          new Date(a.return_deadline).getTime() -
+          new Date(b.return_deadline).getTime(),
+      );
+
+      setRows(mapped);
     } catch {
       setRows([]);
-      setPagination({
-        total: 0,
-        page: 1,
-        limit: LIMIT,
-        totalPages: 0,
-      });
+      setPagination({ total: 0, page: 1, limit: LIMIT, totalPages: 0 });
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ FIX: useEffect trigger saat page berubah (admin only)
   useEffect(() => {
     void load(page);
   }, [user, role, page]);
 
-  // ✅ TAMBAH: Handler pagination
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
 
-  // ✅ Buka dialog untuk group — fetch units semua loan dalam group
-  const openGroupDialog = async (group: RowGroup) => {
-    setSelectedGroup(group);
+  // ✅ Buka dialog — fetch units per loan_id dari assets[]
+  const openRowDialog = async (row: Row) => {
+    setSelectedRow(row);
     setReturnNotes("");
     setUnitConditions({});
-    setGroupUnits({});
+    setAssetUnits({});
     setLoadingUnits(true);
 
     const allUnits: Record<string, UnitDetail[]> = {};
     const initialConditions: Record<string, string> = {};
 
-    for (const loan of group.items) {
+    for (const asset of row.assets) {
       try {
-        const res = await api.get(`/api/loans/${loan.id}/units`);
+        const res = await api.get(`/api/loans/${asset.loan_id}/units`);
         const units: UnitDetail[] = res.data?.data ?? [];
-        allUnits[loan.id] = units;
+        allUnits[asset.loan_id] = units;
         units.forEach((u) => {
           initialConditions[u.id] = u.condition;
         });
       } catch {
-        allUnits[loan.id] = [];
+        allUnits[asset.loan_id] = [];
       }
     }
 
-    setGroupUnits(allUnits);
+    setAssetUnits(allUnits);
     setUnitConditions(initialConditions);
     setLoadingUnits(false);
   };
 
-  // ✅ Konfirmasi semua loan dalam group
-  const confirmGroupReturn = async () => {
-    if (!selectedGroup) return;
+  // ✅ Konfirmasi semua loan (per asset) dalam batch
+  const confirmBatchReturn = async () => {
+    if (!selectedRow) return;
     setSubmitting(true);
 
     let successCount = 0;
 
-    for (const loan of selectedGroup.items) {
-      const loanUnits = groupUnits[loan.id] ?? [];
-      const unit_conditions = loanUnits
+    for (const asset of selectedRow.assets) {
+      const units = assetUnits[asset.loan_id] ?? [];
+      const unit_conditions = units
         .map((u) => ({
           asset_unit_id: u.id,
           return_condition: unitConditions[u.id] ?? "good",
@@ -313,11 +280,13 @@ function Pengembalian() {
       if (unit_conditions.length === 0) continue;
 
       try {
-        await api.patch(`/api/loans/${loan.id}/return`, { unit_conditions });
+        await api.patch(`/api/loans/${asset.loan_id}/return`, {
+          unit_conditions,
+        });
         successCount++;
       } catch (err: any) {
         toast.error(
-          `Gagal proses ${getMerkLabel(loan)}: ${err.response?.data?.message ?? "Error"}`,
+          `Gagal proses ${getAssetLabel(asset)}: ${err.response?.data?.message ?? "Error"}`,
         );
       }
     }
@@ -326,12 +295,11 @@ function Pengembalian() {
 
     if (successCount > 0) {
       toast.success(
-        selectedGroup.items.length > 1
+        selectedRow.assets.length > 1
           ? `${successCount} aset berhasil dikembalikan! Stok otomatis diupdate.`
           : "Pengembalian berhasil dikonfirmasi! Stok otomatis diupdate.",
       );
-      setSelectedGroup(null);
-      // ✅ FIX: Reload dengan halaman saat ini
+      setSelectedRow(null);
       await load(page);
     }
   };
@@ -350,8 +318,6 @@ function Pengembalian() {
     return "Lihat status pengembalian aset yang Anda pinjam.";
   };
 
-  const groups = groupRows(rows);
-
   return (
     <>
       <PageHeader title={getPageTitle()} description={getPageDescription()} />
@@ -360,7 +326,7 @@ function Pengembalian() {
         <div className="mt-8 text-center text-sm text-muted-foreground">
           Memuat data…
         </div>
-      ) : groups.length === 0 ? (
+      ) : rows.length === 0 ? (
         <div className="mt-8">
           <EmptyState
             icon={ArrowLeftRight}
@@ -375,25 +341,23 @@ function Pengembalian() {
       ) : (
         <>
           <div className="mt-6 space-y-3">
-            {groups.map((group) => {
-              const isMulti = group.items.length > 1;
-              const late = isOverdue(group.return_deadline);
+            {rows.map((row) => {
+              const isMulti = row.assets.length > 1;
+              const late = isOverdue(row.return_deadline);
 
               return (
                 <div
-                  key={group.groupKey}
+                  key={row.id}
                   className="rounded-xl border bg-card p-5 shadow-(--shadow-card)"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      {/* ID & Status */}
+                      {/* ✅ ID: pakai loan_number kalau ada, fallback ke id.slice */}
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono text-xs text-muted-foreground">
-                          {group.groupKey.slice(0, 8)}
+                          {row.loan_number ?? row.id.slice(0, 8)}
                         </span>
-                        <StatusBadge
-                          status={mapStatus(group.items[0].status)}
-                        />
+                        <StatusBadge status={mapStatus(row.status)} />
                         {late && (
                           <span className="text-xs font-medium text-destructive">
                             ⚠️ Terlambat
@@ -407,39 +371,34 @@ function Pengembalian() {
                           <div className="flex items-center gap-1.5 mb-1">
                             <Package className="size-3.5 text-muted-foreground" />
                             <span className="text-xs text-muted-foreground font-medium">
-                              {group.items.length} aset dalam satu pengajuan:
+                              {row.assets.length} aset dalam satu pengajuan:
                             </span>
                           </div>
                           <ul className="ml-5 space-y-0.5">
-                            {group.items.map((item) => (
+                            {row.assets.map((asset) => (
                               <li
-                                key={item.id}
+                                key={asset.loan_id}
                                 className="font-display font-semibold text-sm"
                               >
-                                • {getMerkLabel(item)}
-                                {item.quantity
-                                  ? ` × ${item.quantity} unit`
-                                  : ""}
+                                • {getAssetLabel(asset)} × {asset.quantity} unit
                               </li>
                             ))}
                           </ul>
                         </div>
                       ) : (
                         <h3 className="mt-1 font-display font-semibold">
-                          {getMerkLabel(group.items[0])}
-                          {group.items[0].quantity
-                            ? ` × ${group.items[0].quantity} unit`
-                            : ""}
+                          {getAssetLabel(row.assets[0])} ×{" "}
+                          {row.assets[0].quantity} unit
                         </h3>
                       )}
 
                       {/* Peminjam */}
                       {role !== "student" && (
                         <p className="mt-1 text-sm text-muted-foreground">
-                          {group.requester_name}
-                          {group.nim_nip && (
+                          {row.requester_name}
+                          {row.nim_nip && (
                             <span className="font-mono ml-1">
-                              · {group.nim_nip}
+                              · {row.nim_nip}
                             </span>
                           )}
                         </p>
@@ -454,20 +413,19 @@ function Pengembalian() {
                             : "text-muted-foreground",
                         )}
                       >
-                        Pinjam {formatDate(group.borrow_date)} → Tenggat{" "}
-                        {formatDate(group.return_deadline)}
+                        Pinjam {formatDate(row.borrow_date)} → Tenggat{" "}
+                        {formatDate(row.return_deadline)}
                       </p>
                     </div>
 
-                    {/* Aksi admin */}
                     {role === "admin" && (
                       <Button
                         size="sm"
                         variant="brand"
-                        onClick={() => openGroupDialog(group)}
+                        onClick={() => openRowDialog(row)}
                       >
                         <CheckCircle className="size-3.5 mr-1" />
-                        Proses{isMulti ? ` (${group.items.length})` : ""}
+                        Proses{isMulti ? ` (${row.assets.length})` : ""}
                       </Button>
                     )}
                   </div>
@@ -476,7 +434,6 @@ function Pengembalian() {
             })}
           </div>
 
-          {/* ✅ TAMBAH: Pagination Component (admin only) */}
           {role === "admin" && (
             <Pagination
               page={pagination.page}
@@ -492,10 +449,7 @@ function Pengembalian() {
 
       {/* ── Dialog (Admin Only) ── */}
       {role === "admin" && (
-        <Dialog
-          open={!!selectedGroup}
-          onOpenChange={() => setSelectedGroup(null)}
-        >
+        <Dialog open={!!selectedRow} onOpenChange={() => setSelectedRow(null)}>
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Proses Pengembalian Aset</DialogTitle>
@@ -504,38 +458,41 @@ function Pengembalian() {
               </DialogDescription>
             </DialogHeader>
 
-            {selectedGroup && (
+            {selectedRow && (
               <div className="space-y-4">
-                {/* Info Peminjam */}
                 <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
                   <p className="text-xs font-semibold text-muted-foreground uppercase">
-                    Detail Peminjaman
+                    Detail Peminjaman{" "}
+                    {selectedRow.loan_number && (
+                      <span className="font-mono normal-case">
+                        · {selectedRow.loan_number}
+                      </span>
+                    )}
                   </p>
                   <p className="font-medium">
-                    {selectedGroup.requester_name}
-                    {selectedGroup.nim_nip && (
+                    {selectedRow.requester_name}
+                    {selectedRow.nim_nip && (
                       <span className="ml-2 font-mono text-xs text-muted-foreground">
-                        · {selectedGroup.nim_nip}
+                        · {selectedRow.nim_nip}
                       </span>
                     )}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Pinjam {formatDate(selectedGroup.borrow_date)} → Tenggat{" "}
+                    Pinjam {formatDate(selectedRow.borrow_date)} → Tenggat{" "}
                     <span
                       className={
-                        isOverdue(selectedGroup.return_deadline)
+                        isOverdue(selectedRow.return_deadline)
                           ? "text-destructive font-medium"
                           : ""
                       }
                     >
-                      {formatDate(selectedGroup.return_deadline)}
-                      {isOverdue(selectedGroup.return_deadline) &&
+                      {formatDate(selectedRow.return_deadline)}
+                      {isOverdue(selectedRow.return_deadline) &&
                         " ⚠️ Terlambat"}
                     </span>
                   </p>
                 </div>
 
-                {/* Kondisi Unit per Aset */}
                 <div className="space-y-3">
                   <p className="text-xs font-semibold text-muted-foreground uppercase">
                     Verifikasi Kondisi Barang
@@ -546,17 +503,14 @@ function Pengembalian() {
                       unit…
                     </div>
                   ) : (
-                    selectedGroup.items.map((loan) => {
-                      const units = groupUnits[loan.id] ?? [];
+                    selectedRow.assets.map((asset) => {
+                      const units = assetUnits[asset.loan_id] ?? [];
                       return (
-                        <div key={loan.id} className="space-y-2">
-                          {/* Header aset */}
+                        <div key={asset.loan_id} className="space-y-2">
                           <p className="text-sm font-semibold flex items-center gap-1.5">
                             <Package className="size-3.5 text-muted-foreground" />
-                            {getMerkLabel(loan)}
-                            {loan.quantity ? ` × ${loan.quantity} unit` : ""}
+                            {getAssetLabel(asset)} × {asset.quantity} unit
                           </p>
-                          {/* Units */}
                           {units.length === 0 ? (
                             <p className="ml-5 text-xs text-muted-foreground">
                               Tidak ada detail unit.
@@ -610,7 +564,6 @@ function Pengembalian() {
                   )}
                 </div>
 
-                {/* Catatan */}
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold text-muted-foreground uppercase">
                     Catatan Pengembalian (opsional)
@@ -623,7 +576,6 @@ function Pengembalian() {
                   />
                 </div>
 
-                {/* Info sistem */}
                 <div className="rounded-sm bg-blue-500/10 border border-blue-500/20 p-2.5">
                   <p className="text-xs text-blue-700 dark:text-blue-400">
                     💡 <strong>Sistem otomatis akan:</strong> mengupdate status
@@ -637,14 +589,14 @@ function Pengembalian() {
             <DialogFooter>
               <Button
                 variant="ghost"
-                onClick={() => setSelectedGroup(null)}
+                onClick={() => setSelectedRow(null)}
                 disabled={submitting}
               >
                 Batal
               </Button>
               <Button
                 variant="brand"
-                onClick={confirmGroupReturn}
+                onClick={confirmBatchReturn}
                 disabled={submitting || loadingUnits}
               >
                 {submitting ? (
@@ -653,8 +605,8 @@ function Pengembalian() {
                   <>
                     <CheckCircle className="size-4 mr-1" />
                     Konfirmasi Selesai
-                    {(selectedGroup?.items.length ?? 0) > 1
-                      ? ` (${selectedGroup?.items.length} aset)`
+                    {(selectedRow?.assets.length ?? 0) > 1
+                      ? ` (${selectedRow?.assets.length} aset)`
                       : ""}
                   </>
                 )}
